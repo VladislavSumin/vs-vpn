@@ -1,18 +1,19 @@
 use crate::protocol::{self, AddressType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{error, info};
 
 pub async fn run(listen: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
-    eprintln!("VPN server listening on {listen}");
+    info!("VPN server listening on {listen}");
 
     loop {
         let (mut client, addr) = listener.accept().await?;
-        eprintln!("Client connected: {addr}");
+        info!("Client connected: {addr}");
 
         tokio::spawn(async move {
             if let Err(e) = handle_client(&mut client).await {
-                eprintln!("Error handling client {addr}: {e}");
+                error!("Error handling client {addr}: {e}");
             }
         });
     }
@@ -31,7 +32,7 @@ async fn handle_client(client: &mut TcpStream) -> Result<(), Box<dyn std::error:
     let port = u16::from_be_bytes([buf[0], buf[1]]);
 
     let target = format!("{target_addr}:{port}");
-    eprintln!("Connecting to {target}");
+    info!("Connecting to {target}");
 
     let mut remote = match TcpStream::connect(&target).await {
         Ok(conn) => {
@@ -39,7 +40,7 @@ async fn handle_client(client: &mut TcpStream) -> Result<(), Box<dyn std::error:
             conn
         }
         Err(e) => {
-            eprintln!("Failed to connect to {target}: {e}");
+            error!("Failed to connect to {target}: {e}");
             client.write_all(&[0x05]).await?;
             return Err(e.into());
         }
@@ -53,10 +54,10 @@ async fn handle_client(client: &mut TcpStream) -> Result<(), Box<dyn std::error:
 
     tokio::select! {
         r = client_to_remote => {
-            if let Err(e) = r { eprintln!("client->remote relay error: {e}"); }
+            if let Err(e) = r { error!("client->remote relay error: {e}"); }
         }
         r = remote_to_client => {
-            if let Err(e) = r { eprintln!("remote->client relay error: {e}"); }
+            if let Err(e) = r { error!("remote->client relay error: {e}"); }
         }
     }
 

@@ -3,6 +3,7 @@ mod protocol;
 mod server;
 
 use clap::{Parser, Subcommand};
+use tracing::info;
 
 #[derive(Parser)]
 #[command(name = "vs-vpn", about = "Custom VPN with SOCKS5 proxy")]
@@ -29,6 +30,14 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
+        )
+        .init();
+    info!("Starting vs-vpn");
+
     let cli = Cli::parse();
 
     match cli.command {

@@ -1,19 +1,20 @@
 use crate::protocol::{self, AddressType, SocksCommand, SocksReply, SOCKS_VERSION};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{error, info};
 
 pub async fn run(listen: &str, server_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
-    eprintln!("SOCKS5 proxy listening on {listen}");
+    info!("SOCKS5 proxy listening on {listen}");
 
     loop {
         let (mut socks_conn, addr) = listener.accept().await?;
-        eprintln!("SOCKS5 connection from {addr}");
+        info!("SOCKS5 connection from {addr}");
 
         let server_addr = server_addr.to_string();
         tokio::spawn(async move {
             if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr).await {
-                eprintln!("Error handling {addr}: {e}");
+                error!("Error handling {addr}: {e}");
             }
         });
     }
@@ -48,7 +49,7 @@ async fn handle_socks_client(
     socks_conn.read_exact(&mut buf[..2]).await?;
     let port = u16::from_be_bytes([buf[0], buf[1]]);
 
-    eprintln!("SOCKS5 CONNECT -> {target_addr}:{port}");
+    info!("SOCKS5 CONNECT -> {target_addr}:{port}");
 
     // Connect to VPN server
     let mut server = TcpStream::connect(server_addr).await?;
@@ -88,10 +89,10 @@ async fn handle_socks_client(
 
     tokio::select! {
         r = client_to_server => {
-            if let Err(e) = r { eprintln!("client->server relay error: {e}"); }
+            if let Err(e) = r { error!("client->server relay error: {e}"); }
         }
         r = server_to_client => {
-            if let Err(e) = r { eprintln!("server->client relay error: {e}"); }
+            if let Err(e) = r { error!("server->client relay error: {e}"); }
         }
     }
 
