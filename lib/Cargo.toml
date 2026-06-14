@@ -10,9 +10,9 @@ crate-type = ["lib"]
 vs-vpn-tunnel = { path = "../feature/tunnel/api" }
 vs-vpn-tunnel-tcp-plain = { path = "../feature/tunnel/tcp-plain" }
 vs-vpn-tunnel-tcp-encrypted = { path = "../feature/tunnel/tcp-encrypted" }
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-tracing = "0.1"
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }

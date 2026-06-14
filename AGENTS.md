@@ -17,6 +17,7 @@
 - Server and client `run` functions accept an optional `oneshot::Sender<SocketAddr>` for test binding discovery
 
 ## Conventions
+- Все внешние зависимости (crates.io) должны быть объявлены только в корневом `Cargo.toml` в секции `[workspace.dependencies]`. В `Cargo.toml` под-крейтов используются только `{ workspace = true }` и path-зависимости.
 - Error handling uses `Box<dyn std::error::Error>` everywhere
 - Logging: `tracing` + `tracing-subscriber` (fmt + env-filter); default level `trace`, override with `RUST_LOG=info`
 - Comments must be written in Russian

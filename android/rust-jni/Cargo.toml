@@ -9,9 +9,9 @@ name = "vs_vpn_jni"
 
 [dependencies]
 vs-vpn = { path = "../../lib" }
-jni = "0.21"
-tokio = { version = "1", features = ["rt", "sync", "net", "macros"] }
-tokio-util = "0.7"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-hex = "0.4"
+jni = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "net", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+hex = { workspace = true }
