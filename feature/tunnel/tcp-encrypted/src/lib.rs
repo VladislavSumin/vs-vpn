@@ -49,9 +49,9 @@ impl Tunnel for EncryptedTunnel {
     async fn recv_frame(&mut self) -> io::Result<Option<Vec<u8>>> {
         let stream = self.stream.as_mut().expect("stream уже ушёл в relay");
         if self.is_client {
-            crypto::read_encrypted_frame(stream, &self.server_key).await
+            crypto::read_encrypted_frame(stream, &self.server_key, &mut self.s_nonce).await
         } else {
-            crypto::read_encrypted_frame(stream, &self.client_key).await
+            crypto::read_encrypted_frame(stream, &self.client_key, &mut self.c_nonce).await
         }
     }
 
@@ -66,21 +66,24 @@ impl Tunnel for EncryptedTunnel {
         let send_key;
         let recv_key;
         let send_nonce;
+        let recv_nonce;
         if self.is_client {
             send_key = &self.client_key;
             recv_key = &self.server_key;
             send_nonce = &mut self.c_nonce;
+            recv_nonce = &mut self.s_nonce;
         } else {
             send_key = &self.server_key;
             recv_key = &self.client_key;
             send_nonce = &mut self.s_nonce;
+            recv_nonce = &mut self.c_nonce;
         }
 
         tokio::select! {
             r = crypto::relay_plain_to_encrypted(&mut er, &mut tw, send_key, send_nonce) => {
                 if let Err(e) = r { error!("relay encrypted tunnel-send error: {e}"); }
             }
-            r = crypto::relay_encrypted_to_plain(&mut tr, &mut ew, recv_key) => {
+            r = crypto::relay_encrypted_to_plain(&mut tr, &mut ew, recv_key, recv_nonce) => {
                 if let Err(e) = r { error!("relay encrypted tunnel-recv error: {e}"); }
             }
         }

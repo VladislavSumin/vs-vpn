@@ -11,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
 pub const TAG_LEN: usize = 16;
-pub const MAX_PLAINTEXT: usize = u16::MAX as usize - NONCE_LEN - TAG_LEN;
+pub const MAX_PLAINTEXT: usize = u16::MAX as usize - TAG_LEN;
 pub const RELAY_BUF: usize = 16384;
 
 const HKDF_INFO: &[u8] = b"vs-vpn-tunnel-v1";
@@ -89,9 +89,8 @@ pub async fn write_encrypted_frame<W: AsyncWrite + Unpin>(
         .encrypt(&full_nonce.into(), plaintext)
         .map_err(|e| io_err(format!("encryption error: {e}")))?;
 
-    let frame_len = (NONCE_LEN + ciphertext.len()) as u16;
+    let frame_len = ciphertext.len() as u16;
     writer.write_all(&frame_len.to_be_bytes()).await?;
-    writer.write_all(&full_nonce).await?;
     writer.write_all(&ciphertext).await?;
 
     *nonce_counter += 1;
@@ -101,6 +100,7 @@ pub async fn write_encrypted_frame<W: AsyncWrite + Unpin>(
 pub async fn read_encrypted_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     key: &[u8; KEY_LEN],
+    nonce_counter: &mut u64,
 ) -> io::Result<Option<Vec<u8>>> {
     let mut len_buf = [0u8; 2];
     match reader.read_exact(&mut len_buf).await {
@@ -110,22 +110,23 @@ pub async fn read_encrypted_frame<R: AsyncRead + Unpin>(
     }
     let frame_len = u16::from_be_bytes(len_buf) as usize;
 
-    if frame_len < NONCE_LEN + TAG_LEN {
+    if frame_len < TAG_LEN {
         return Err(io_err(format!("frame too short: {} bytes", frame_len)));
     }
 
-    let mut payload = vec![0u8; frame_len];
-    reader.read_exact(&mut payload).await?;
+    let mut ciphertext = vec![0u8; frame_len];
+    reader.read_exact(&mut ciphertext).await?;
 
-    let nonce = &payload[..NONCE_LEN];
-    let ciphertext = &payload[NONCE_LEN..];
+    let mut full_nonce = [0u8; NONCE_LEN];
+    full_nonce[..8].copy_from_slice(&nonce_counter.to_le_bytes());
 
     let cipher =
         ChaCha20Poly1305::new_from_slice(key).map_err(|e| io_err(format!("invalid key: {e}")))?;
     let plaintext = cipher
-        .decrypt(nonce.into(), ciphertext)
+        .decrypt(&full_nonce.into(), ciphertext.as_slice())
         .map_err(|e| io_err(format!("decryption error: {e}")))?;
 
+    *nonce_counter += 1;
     Ok(Some(plaintext))
 }
 
@@ -149,9 +150,10 @@ pub async fn relay_encrypted_to_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpi
     reader: &mut R,
     writer: &mut W,
     key: &[u8; KEY_LEN],
+    nonce: &mut u64,
 ) -> io::Result<()> {
     loop {
-        let frame = read_encrypted_frame(reader, key).await?;
+        let frame = read_encrypted_frame(reader, key, nonce).await?;
         match frame {
             Some(plain) => writer.write_all(&plain).await?,
             None => break Ok(()),
@@ -212,7 +214,7 @@ mod tests {
             .await
             .unwrap();
 
-        let decrypted = read_encrypted_frame(&mut reader, &ck)
+        let decrypted = read_encrypted_frame(&mut reader, &ck, &mut 0)
             .await
             .unwrap()
             .unwrap();
@@ -231,7 +233,7 @@ mod tests {
             .await
             .unwrap();
 
-        let decrypted = read_encrypted_frame(&mut reader, &ck)
+        let decrypted = read_encrypted_frame(&mut reader, &ck, &mut 0)
             .await
             .unwrap()
             .unwrap();
@@ -263,8 +265,9 @@ mod tests {
         };
 
         let mut received = Vec::new();
+        let mut read_nonce: u64 = 0;
         for _ in 0..msg_count {
-            let plain = read_encrypted_frame(&mut reader, &ck)
+            let plain = read_encrypted_frame(&mut reader, &ck, &mut read_nonce)
                 .await
                 .unwrap()
                 .unwrap();
@@ -300,7 +303,9 @@ mod tests {
         drop(writer); // закрываем писателя — читатель получает EOF
 
         let key = [0u8; KEY_LEN];
-        let result = read_encrypted_frame(&mut reader, &key).await.unwrap();
+        let result = read_encrypted_frame(&mut reader, &key, &mut 0)
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -317,10 +322,10 @@ mod tests {
     async fn test_read_frame_too_short() {
         let (mut reader, mut writer) = duplex(64);
         let key = [0u8; KEY_LEN];
-        // Записываем длину фрейма меньше NONCE_LEN + TAG_LEN
-        let short_len = (NONCE_LEN + TAG_LEN - 1) as u16;
+        // Записываем длину фрейма меньше TAG_LEN
+        let short_len = (TAG_LEN - 1) as u16;
         writer.write_all(&short_len.to_be_bytes()).await.unwrap();
-        let result = read_encrypted_frame(&mut reader, &key).await;
+        let result = read_encrypted_frame(&mut reader, &key, &mut 0).await;
         assert!(result.is_err());
     }
 
@@ -337,7 +342,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = read_encrypted_frame(&mut reader, &wrong_key).await;
+        let result = read_encrypted_frame(&mut reader, &wrong_key, &mut 0).await;
         assert!(result.is_err());
     }
 
@@ -358,7 +363,7 @@ mod tests {
                 .unwrap();
 
             // Клиент читает ответ
-            let reply = read_encrypted_frame(&mut client_stream, &sk)
+            let reply = read_encrypted_frame(&mut client_stream, &sk, &mut 0)
                 .await
                 .unwrap()
                 .unwrap();
@@ -373,7 +378,7 @@ mod tests {
                 .unwrap();
 
             // Сервер читает запрос
-            let req = read_encrypted_frame(&mut server_stream, &ck)
+            let req = read_encrypted_frame(&mut server_stream, &ck, &mut 0)
                 .await
                 .unwrap()
                 .unwrap();

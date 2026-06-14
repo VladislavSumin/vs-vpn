@@ -141,7 +141,7 @@ mod tests {
             .await
             .unwrap();
 
-        let plain = crypto::read_encrypted_frame(&mut client, &sk)
+        let plain = crypto::read_encrypted_frame(&mut client, &sk, &mut 0)
             .await
             .unwrap()
             .unwrap();
@@ -242,7 +242,8 @@ mod tests {
             .unwrap();
 
         // Читаем зашифрованный статус
-        let plain = crypto::read_encrypted_frame(&mut client, &sk)
+        let mut s_nonce: u64 = 0;
+        let plain = crypto::read_encrypted_frame(&mut client, &sk, &mut s_nonce)
             .await
             .unwrap()
             .unwrap();
@@ -252,7 +253,7 @@ mod tests {
         crypto::write_encrypted_frame(&mut client, b"ping", &ck, &mut c_nonce)
             .await
             .unwrap();
-        let echoed = crypto::read_encrypted_frame(&mut client, &sk)
+        let echoed = crypto::read_encrypted_frame(&mut client, &sk, &mut s_nonce)
             .await
             .unwrap()
             .unwrap();

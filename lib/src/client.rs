@@ -322,7 +322,7 @@ mod tests {
             let (ck, sk) = crypto::secure_handshake(&mut tunnel, &psk, false)
                 .await
                 .unwrap();
-            let plain = crypto::read_encrypted_frame(&mut tunnel, &ck)
+            let plain = crypto::read_encrypted_frame(&mut tunnel, &ck, &mut 0)
                 .await
                 .unwrap()
                 .unwrap();
@@ -352,7 +352,7 @@ mod tests {
             .await
             .unwrap();
 
-        let plain = crypto::read_encrypted_frame(&mut client, &sk)
+        let plain = crypto::read_encrypted_frame(&mut client, &sk, &mut 0)
             .await
             .unwrap()
             .unwrap();
