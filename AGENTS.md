@@ -17,3 +17,4 @@
 - Uses `#[repr(u8)]` enums with `from_u8` constructors for wire protocol
 - Logging uses `tracing` with `tracing-subscriber` (fmt + env-filter)
 - Default log level is `trace`; override with `RUST_LOG=info` (or `debug`, `warn`, `error`)
+- Comments must be written in Russian
