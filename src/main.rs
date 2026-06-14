@@ -38,30 +38,9 @@ enum Command {
     Keygen,
 }
 
-fn parse_secret(s: &str) -> Result<[u8; crypto::KEY_LEN], Box<dyn std::error::Error>> {
-    let bytes = hex::decode(s).map_err(|e| format!("invalid hex key: {e}"))?;
-    if bytes.len() != crypto::KEY_LEN {
-        return Err(format!(
-            "key must be {} hex chars ({} bytes), got {} bytes",
-            crypto::KEY_LEN * 2,
-            crypto::KEY_LEN,
-            bytes.len()
-        )
-        .into());
-    }
-    let mut key = [0u8; crypto::KEY_LEN];
-    key.copy_from_slice(&bytes);
-    Ok(key)
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
-        )
-        .init();
+    init_tracing();
     info!("Starting vs-vpn");
 
     let cli = Cli::parse();
@@ -86,4 +65,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace")),
+        )
+        .init();
+}
+
+fn parse_secret(s: &str) -> Result<[u8; crypto::KEY_LEN], Box<dyn std::error::Error>> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex key: {e}"))?;
+    if bytes.len() != crypto::KEY_LEN {
+        return Err(format!(
+            "key must be {} hex chars ({} bytes), got {} bytes",
+            crypto::KEY_LEN * 2,
+            crypto::KEY_LEN,
+            bytes.len()
+        )
+        .into());
+    }
+    let mut key = [0u8; crypto::KEY_LEN];
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }

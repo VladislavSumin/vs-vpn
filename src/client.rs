@@ -13,10 +13,11 @@ pub async fn run(
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
+    info!("SOCKS5 proxy listening on {listen}");
+
     if let Some(tx) = ready {
         let _ = tx.send(listener.local_addr()?);
     }
-    info!("SOCKS5 proxy listening on {listen}");
 
     loop {
         tokio::select! {
