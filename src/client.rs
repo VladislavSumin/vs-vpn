@@ -1,3 +1,4 @@
+use crate::protocol::{self, AddressType, SocksCommand, SocksReply, SOCKS_VERSION};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -24,65 +25,61 @@ async fn handle_socks_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 512];
 
-    // --- SOCKS5 Handshake ---
+    // SOCKS5 Handshake
     socks_conn.read_exact(&mut buf[..2]).await?;
     let nmethods = buf[1] as usize;
     socks_conn.read_exact(&mut buf[..nmethods]).await?;
 
-    // Respond: no authentication required (0x00)
-    socks_conn.write_all(&[0x05, 0x00]).await?;
+    socks_conn
+        .write_all(&[SOCKS_VERSION, 0x00])
+        .await?;
 
-    // --- SOCKS5 Request ---
+    // SOCKS5 Request
     socks_conn.read_exact(&mut buf[..4]).await?;
-    let cmd = buf[1];
-    if cmd != 0x01 {
-        send_socks_reply(socks_conn, 0x07).await?; // Command not supported
+    let cmd = SocksCommand::from_u8(buf[1]);
+    if cmd != Some(SocksCommand::Connect) {
+        send_socks_reply(socks_conn, SocksReply::CommandNotSupported).await?;
         return Err("unsupported SOCKS5 command".into());
     }
 
-    // Parse target address
-    let atyp = buf[3];
-    let target_addr = read_address(socks_conn, atyp, &mut buf).await?;
+    let atyp = AddressType::from_u8(buf[3])
+        .ok_or_else(|| format!("unsupported address type: {:#04x}", buf[3]))?;
+    let target_addr = protocol::read_address(socks_conn, atyp, &mut buf).await?;
     socks_conn.read_exact(&mut buf[..2]).await?;
     let port = u16::from_be_bytes([buf[0], buf[1]]);
 
-    let target = (target_addr, port);
-    eprintln!("SOCKS5 CONNECT -> {}:{}", target.0, target.1);
+    eprintln!("SOCKS5 CONNECT -> {target_addr}:{port}");
 
-    // --- Connect to VPN server ---
+    // Connect to VPN server
     let mut server = TcpStream::connect(server_addr).await?;
 
-    // Send target address to server
-    // Format: [atyp][addr...][port:2]
-    let addr_bytes = encode_address(&target.0);
+    // Send target address to server: [atyp][addr...][port:2]
+    let (header_atyp, addr_bytes) = protocol::encode_address(&target_addr);
     let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
-    header.push(atyp);
+    header.push(header_atyp as u8);
     header.extend_from_slice(&addr_bytes);
     header.extend_from_slice(&port.to_be_bytes());
     server.write_all(&header).await?;
 
-    // Read server response (1 byte status)
+    // Read server response
     server.read_exact(&mut buf[..1]).await?;
     let status = buf[0];
     if status != 0x00 {
         let socks_rep = match status {
-            0x01 => 0x01, // General failure
-            0x02 => 0x02, // Connection not allowed
-            0x03 => 0x03, // Network unreachable
-            0x04 => 0x04, // Host unreachable
-            0x05 => 0x05, // Connection refused
-            _ => 0x01,
+            0x01 => SocksReply::GeneralFailure,
+            0x02 => SocksReply::ConnectionNotAllowed,
+            0x03 => SocksReply::NetworkUnreachable,
+            0x04 => SocksReply::HostUnreachable,
+            0x05 => SocksReply::ConnectionRefused,
+            _ => SocksReply::GeneralFailure,
         };
         send_socks_reply(socks_conn, socks_rep).await?;
         return Err(format!("server rejected: status {status:#04x}").into());
     }
 
-    // Send success reply to SOCKS5 client
-    // BND.ADDR and BND.PORT — use zeros (RFC 1928: for CONNECT, these are bound address)
-    let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-    socks_conn.write_all(&reply).await?;
+    send_socks_reply(socks_conn, SocksReply::Succeeded).await?;
 
-    // --- Bidirectional relay ---
+    // Bidirectional relay
     let (mut sr, mut sw) = socks_conn.split();
     let (mut cr, mut cw) = server.split();
 
@@ -91,70 +88,22 @@ async fn handle_socks_client(
 
     tokio::select! {
         r = client_to_server => {
-            if let Err(e) = r {
-                eprintln!("client->server relay error: {e}");
-            }
+            if let Err(e) = r { eprintln!("client->server relay error: {e}"); }
         }
         r = server_to_client => {
-            if let Err(e) = r {
-                eprintln!("server->client relay error: {e}");
-            }
+            if let Err(e) = r { eprintln!("server->client relay error: {e}"); }
         }
     }
 
     Ok(())
 }
 
-async fn read_address(
-    stream: &mut TcpStream,
-    atyp: u8,
-    buf: &mut [u8],
-) -> Result<String, Box<dyn std::error::Error>> {
-    match atyp {
-        0x01 => {
-            // IPv4
-            stream.read_exact(&mut buf[..4]).await?;
-            Ok(format!("{}.{}.{}.{}", buf[0], buf[1], buf[2], buf[3]))
-        }
-        0x03 => {
-            // Domain name
-            stream.read_exact(&mut buf[..1]).await?;
-            let len = buf[0] as usize;
-            stream.read_exact(&mut buf[..len]).await?;
-            Ok(String::from_utf8_lossy(&buf[..len]).to_string())
-        }
-        0x04 => {
-            // IPv6
-            stream.read_exact(&mut buf[..16]).await?;
-            let groups: Vec<String> = (0..8)
-                .map(|i| format!("{:02x}{:02x}", buf[i * 2], buf[i * 2 + 1]))
-                .collect();
-            Ok(groups.join(":"))
-        }
-        _ => Err(format!("unsupported address type: {atyp:#04x}").into()),
-    }
-}
-
-fn encode_address(addr: &str) -> Vec<u8> {
-    if let Ok(ip) = addr.parse::<std::net::Ipv4Addr>() {
-        ip.octets().to_vec()
-    } else if let Ok(ip) = addr.parse::<std::net::Ipv6Addr>() {
-        ip.octets().to_vec()
-    } else {
-        let bytes = addr.as_bytes();
-        let mut v = Vec::with_capacity(1 + bytes.len());
-        v.push(bytes.len() as u8);
-        v.extend_from_slice(bytes);
-        v
-    }
-}
-
 async fn send_socks_reply(
     stream: &mut TcpStream,
-    rep: u8,
+    rep: SocksReply,
 ) -> Result<(), Box<dyn std::error::Error>> {
     stream
-        .write_all(&[0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .write_all(&[SOCKS_VERSION, rep as u8, 0x00, AddressType::Ipv4 as u8, 0, 0, 0, 0, 0, 0])
         .await?;
     Ok(())
 }
