@@ -1,0 +1,18 @@
+[package]
+name = "vs-vpn"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+vs-vpn-tunnel = { path = "../feature/tunnel/api" }
+vs-vpn-tunnel-tcp-plain = { path = "../feature/tunnel/tcp-plain" }
+vs-vpn-tunnel-tcp-encrypted = { path = "../feature/tunnel/tcp-encrypted" }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

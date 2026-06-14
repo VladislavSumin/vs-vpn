@@ -1,0 +1,17 @@
+[package]
+name = "vs-vpn-bin"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vs-vpn"
+path = "src/main.rs"
+
+[dependencies]
+vs-vpn = { path = "../../lib" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = { version = "0.7" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"

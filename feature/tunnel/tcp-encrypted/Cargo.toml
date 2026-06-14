@@ -1,0 +1,18 @@
+[package]
+name = "vs-vpn-tunnel-tcp-encrypted"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vs-vpn-tunnel = { path = "../api" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["net", "io-util"] }
+tracing = "0.1"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "io-util"] }

@@ -1,7 +1,9 @@
-use crate::crypto;
 use crate::protocol;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
+use vs_vpn_tunnel::Tunnel;
+use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
+use vs_vpn_tunnel_tcp_plain::PlainTunnel;
 
 pub async fn run(
     listen: &str,
@@ -34,19 +36,17 @@ async fn handle_client(
     secret: Option<[u8; crypto::KEY_LEN]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(psk) = secret {
-        let tunnel = crate::tunnel::EncryptedTunnel::new(client, psk, false).await?;
+        let tunnel = EncryptedTunnel::new(client, psk, false).await?;
         run_tunnel_server(tunnel).await
     } else {
-        let tunnel = crate::tunnel::PlainTunnel::new(client);
+        let tunnel = PlainTunnel::new(client);
         run_tunnel_server(tunnel).await
     }
 }
 
 /// Общая логика туннельного протокола серверной стороны
 /// (статическая диспетчеризация через `T`).
-async fn run_tunnel_server<T: crate::tunnel::Tunnel>(
-    mut tunnel: T,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_tunnel_server<T: Tunnel>(mut tunnel: T) -> Result<(), Box<dyn std::error::Error>> {
     let plain = tunnel.recv_frame().await?;
     let plain = plain.ok_or("client closed connection before tunnel header")?;
     let (_, target_addr, port) = protocol::parse_header(&plain)?;
@@ -73,10 +73,10 @@ async fn run_tunnel_server<T: crate::tunnel::Tunnel>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto;
     use crate::protocol::{self};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use vs_vpn_tunnel_tcp_encrypted::crypto;
 
     #[tokio::test]
     async fn test_server_target_unreachable_plain() {

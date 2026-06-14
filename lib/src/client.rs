@@ -1,9 +1,11 @@
-use crate::crypto;
 use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+use vs_vpn_tunnel::Tunnel;
+use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
+use vs_vpn_tunnel_tcp_plain::PlainTunnel;
 
 pub async fn run(
     listen: &str,
@@ -119,16 +121,16 @@ async fn handle_socks_client(
     let server = TcpStream::connect(server_addr).await?;
 
     if let Some(psk) = secret {
-        let tunnel = crate::tunnel::EncryptedTunnel::new(server, psk, true).await?;
+        let tunnel = EncryptedTunnel::new(server, psk, true).await?;
         run_tunnel_client(socks_conn, tunnel, &header).await
     } else {
-        let tunnel = crate::tunnel::PlainTunnel::new(server);
+        let tunnel = PlainTunnel::new(server);
         run_tunnel_client(socks_conn, tunnel, &header).await
     }
 }
 
 /// Общая логика туннельного протокола (статическая диспетчеризация через `T`).
-async fn run_tunnel_client<T: crate::tunnel::Tunnel>(
+async fn run_tunnel_client<T: Tunnel>(
     socks_conn: &mut TcpStream,
     mut tunnel: T,
     header: &[u8],
@@ -219,10 +221,10 @@ async fn send_socks_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto;
     use crate::protocol::{self, AddressType, SOCKS_VERSION};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use vs_vpn_tunnel_tcp_encrypted::crypto;
 
     #[tokio::test]
     async fn test_tunnel_header_plain() {

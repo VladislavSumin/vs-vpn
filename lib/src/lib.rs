@@ -1,5 +1,4 @@
 pub mod client;
-pub mod crypto;
 pub mod protocol;
 pub mod server;
-pub mod tunnel;
+pub use vs_vpn_tunnel_tcp_encrypted::crypto;

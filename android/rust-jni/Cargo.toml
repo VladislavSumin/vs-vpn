@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 name = "vs_vpn_jni"
 
 [dependencies]
-vs-vpn = { path = "../.." }
+vs-vpn = { path = "../../lib" }
 jni = "0.21"
 tokio = { version = "1", features = ["rt", "sync", "net", "macros"] }
 tokio-util = "0.7"
