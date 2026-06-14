@@ -54,10 +54,7 @@ async fn socks5_connect(proxy_port: u16, target_port: u16) -> TcpStream {
         .await
         .unwrap();
 
-    socks
-        .write_all(&[0x05, 0x01, 0x00])
-        .await
-        .unwrap();
+    socks.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
     let mut buf = [0u8; 2];
     socks.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, [0x05, 0x00], "SOCKS5 handshake failed");
@@ -65,7 +62,16 @@ async fn socks5_connect(proxy_port: u16, target_port: u16) -> TcpStream {
     let port_bytes = target_port.to_be_bytes();
     socks
         .write_all(&[
-            0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, port_bytes[0], port_bytes[1],
+            0x05,
+            0x01,
+            0x00,
+            0x01,
+            127,
+            0,
+            0,
+            1,
+            port_bytes[0],
+            port_bytes[1],
         ])
         .await
         .unwrap();
@@ -83,10 +89,7 @@ async fn socks5_connect_expect_error(proxy_port: u16, target_port: u16) -> u8 {
         .await
         .unwrap();
 
-    socks
-        .write_all(&[0x05, 0x01, 0x00])
-        .await
-        .unwrap();
+    socks.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
     let mut buf = [0u8; 2];
     socks.read_exact(&mut buf).await.unwrap();
     assert_eq!(buf, [0x05, 0x00]);
@@ -94,7 +97,16 @@ async fn socks5_connect_expect_error(proxy_port: u16, target_port: u16) -> u8 {
     let port_bytes = target_port.to_be_bytes();
     socks
         .write_all(&[
-            0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, port_bytes[0], port_bytes[1],
+            0x05,
+            0x01,
+            0x00,
+            0x01,
+            127,
+            0,
+            0,
+            1,
+            port_bytes[0],
+            port_bytes[1],
         ])
         .await
         .unwrap();

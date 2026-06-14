@@ -132,7 +132,7 @@ pub async fn read_encrypted_frame<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{duplex, AsyncWriteExt};
+    use tokio::io::{AsyncWriteExt, duplex};
 
     #[test]
     fn test_generate_psk_length() {
@@ -172,8 +172,7 @@ mod tests {
     #[tokio::test]
     async fn test_encrypt_decrypt_roundtrip() {
         let psk = generate_psk();
-        let (ck, _sk) =
-            derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
+        let (ck, _sk) = derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
 
         let (mut writer, mut reader) = duplex(4096);
 
@@ -183,15 +182,17 @@ mod tests {
             .await
             .unwrap();
 
-        let decrypted = read_encrypted_frame(&mut reader, &ck).await.unwrap().unwrap();
+        let decrypted = read_encrypted_frame(&mut reader, &ck)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(decrypted, plaintext);
     }
 
     #[tokio::test]
     async fn test_encrypt_decrypt_empty_plaintext() {
         let psk = generate_psk();
-        let (ck, _sk) =
-            derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
+        let (ck, _sk) = derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
 
         let (mut writer, mut reader) = duplex(4096);
 
@@ -200,19 +201,23 @@ mod tests {
             .await
             .unwrap();
 
-        let decrypted = read_encrypted_frame(&mut reader, &ck).await.unwrap().unwrap();
+        let decrypted = read_encrypted_frame(&mut reader, &ck)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(decrypted.is_empty());
     }
 
     #[tokio::test]
     async fn test_multiple_frames_nonce_progression() {
         let psk = generate_psk();
-        let (ck, _sk) =
-            derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
+        let (ck, _sk) = derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
 
         let (mut writer, mut reader) = duplex(65536);
 
-        let messages: Vec<Vec<u8>> = (0..5).map(|i| format!("message {i}").into_bytes()).collect();
+        let messages: Vec<Vec<u8>> = (0..5)
+            .map(|i| format!("message {i}").into_bytes())
+            .collect();
         let msg_count = messages.len();
         let messages_clone = messages.clone();
 
@@ -229,7 +234,10 @@ mod tests {
 
         let mut received = Vec::new();
         for _ in 0..msg_count {
-            let plain = read_encrypted_frame(&mut reader, &ck).await.unwrap().unwrap();
+            let plain = read_encrypted_frame(&mut reader, &ck)
+                .await
+                .unwrap()
+                .unwrap();
             received.push(plain);
         }
 
@@ -289,8 +297,7 @@ mod tests {
     #[tokio::test]
     async fn test_encrypt_decrypt_with_wrong_key() {
         let psk = generate_psk();
-        let (ck, _sk) =
-            derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
+        let (ck, _sk) = derive_session_keys(&psk, &[0u8; KEY_LEN], &[0u8; KEY_LEN]).unwrap();
         let wrong_key = [0xFFu8; KEY_LEN];
 
         let (mut writer, mut reader) = duplex(4096);

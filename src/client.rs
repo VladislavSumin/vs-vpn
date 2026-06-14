@@ -406,8 +406,9 @@ mod tests {
             let mut buf = [0u8; 512];
             tunnel.read_exact(&mut buf[..1]).await.unwrap();
             let atyp = AddressType::from_u8(buf[0]).unwrap();
-            let _addr =
-                protocol::read_address(&mut tunnel, atyp, &mut buf).await.unwrap();
+            let _addr = protocol::read_address(&mut tunnel, atyp, &mut buf)
+                .await
+                .unwrap();
             tunnel.read_exact(&mut buf[..2]).await.unwrap();
             tunnel.write_all(&[0x00]).await.unwrap();
             // Держим соединение открытым для ретрансляции
