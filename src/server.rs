@@ -10,10 +10,13 @@ pub async fn run(
     ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
+    info!("VPN server listening on {listen}");
+
+    // Отправляем наружу реальный адресс сокета, после того как он уже bind.
+    // это позволяет использовать динамический порт в тестах, а так же дождаться реально bind.
     if let Some(tx) = ready {
         let _ = tx.send(listener.local_addr()?);
     }
-    info!("VPN server listening on {listen}");
 
     loop {
         let (mut client, addr) = listener.accept().await?;

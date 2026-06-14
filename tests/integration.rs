@@ -1,6 +1,7 @@
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
 use vs_vpn::{client, crypto, server};
 
 async fn start_echo() -> u16 {
@@ -41,9 +42,15 @@ async fn start_vpn_client(
     let (tx, rx) = tokio::sync::oneshot::channel();
     let server_addr = format!("127.0.0.1:{server_port}");
     let handle = tokio::spawn(async move {
-        client::run("127.0.0.1:0", &server_addr, secret, Some(tx))
-            .await
-            .expect("client run failed");
+        client::run(
+            "127.0.0.1:0",
+            &server_addr,
+            secret,
+            Some(tx),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("client run failed");
     });
     let addr = rx.await.expect("client failed to bind");
     (handle, addr.port())

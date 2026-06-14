@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use vs_vpn::{client, crypto, server};
 
@@ -72,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             secret,
         } => {
             let key = secret.as_deref().map(parse_secret).transpose()?;
-            client::run(&listen, &server, key, None).await?;
+            client::run(&listen, &server, key, None, CancellationToken::new()).await?;
         }
         Command::Server { listen, secret } => {
             let key = secret.as_deref().map(parse_secret).transpose()?;

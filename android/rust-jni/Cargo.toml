@@ -1,0 +1,17 @@
+[package]
+name = "vs-vpn-jni"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "vs_vpn_jni"
+
+[dependencies]
+vs-vpn = { path = "../.." }
+jni = "0.21"
+tokio = { version = "1", features = ["rt", "sync", "net", "macros"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+hex = "0.4"

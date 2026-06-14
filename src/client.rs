@@ -2,6 +2,7 @@ use crate::crypto;
 use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 pub async fn run(
@@ -9,6 +10,7 @@ pub async fn run(
     server_addr: &str,
     secret: Option<[u8; crypto::KEY_LEN]>,
     ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+    shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
     if let Some(tx) = ready {
@@ -17,16 +19,26 @@ pub async fn run(
     info!("SOCKS5 proxy listening on {listen}");
 
     loop {
-        let (mut socks_conn, addr) = listener.accept().await?;
-        info!("SOCKS5 connection from {addr}");
-
-        let server_addr = server_addr.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr, secret).await {
-                error!("Error handling {addr}: {e}");
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                info!("SOCKS5 proxy shutting down");
+                break;
             }
-        });
+            result = listener.accept() => {
+                let (mut socks_conn, addr) = result?;
+                info!("SOCKS5 connection from {addr}");
+
+                let server_addr = server_addr.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr, secret).await {
+                        error!("Error handling {addr}: {e}");
+                    }
+                });
+            }
+        }
     }
+
+    Ok(())
 }
 
 async fn handle_socks_client(
