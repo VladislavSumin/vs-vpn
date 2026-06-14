@@ -33,8 +33,20 @@ async fn handle_client(
     client: TcpStream,
     secret: Option<[u8; crypto::KEY_LEN]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut tunnel = crate::tunnel::Tunnel::new(client, secret, false).await?;
+    if let Some(psk) = secret {
+        let tunnel = crate::tunnel::EncryptedTunnel::new(client, psk, false).await?;
+        run_tunnel_server(tunnel).await
+    } else {
+        let tunnel = crate::tunnel::PlainTunnel::new(client);
+        run_tunnel_server(tunnel).await
+    }
+}
 
+/// Общая логика туннельного протокола серверной стороны
+/// (статическая диспетчеризация через `T`).
+async fn run_tunnel_server<T: crate::tunnel::Tunnel>(
+    mut tunnel: T,
+) -> Result<(), Box<dyn std::error::Error>> {
     let plain = tunnel.recv_frame().await?;
     let plain = plain.ok_or("client closed connection before tunnel header")?;
     let (_, target_addr, port) = protocol::parse_header(&plain)?;

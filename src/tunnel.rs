@@ -5,18 +5,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::error;
 
-/// Супер-trait для dyn-совместимого параметра ретрансляции.
-trait IoStream: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> IoStream for T {}
-
-/// Публичная обёртка над конкретным режимом туннеля.
-/// Скрывает `if secret` за единым trait-интерфейсом.
-pub struct Tunnel {
-    inner: Box<dyn TunnelInner>,
-}
-
+/// Абстрактный туннель: владеет TCP-потоком, предоставляет фреймовый протокол
+/// и двунаправленную ретрансляцию (статическая диспетчеризация — без dyn).
 #[async_trait]
-trait TunnelInner: Send {
+pub trait Tunnel: Send {
     /// Отправить один фрейм данных в туннель.
     async fn send_frame(&mut self, data: &[u8]) -> io::Result<()>;
 
@@ -26,48 +18,20 @@ trait TunnelInner: Send {
     /// Двунаправленная ретрансляция: внутренний поток ↔ внешний поток.
     /// Потребляет внутренний поток (self.stream.take()) для доступа к полям
     /// ключей/nonce без конфликтов заимствования.
-    async fn relay_bidirectional(&mut self, external: &mut dyn IoStream) -> io::Result<()>;
-}
-
-impl Tunnel {
-    /// Создаёт туннель: выполняет рукопожатие (для encrypted) и возвращает
-    /// готовый объект, владеющий потоком.
-    pub async fn new(
-        stream: TcpStream,
-        secret: Option<[u8; crypto::KEY_LEN]>,
-        is_client: bool,
-    ) -> io::Result<Self> {
-        let inner: Box<dyn TunnelInner> = match secret {
-            Some(psk) => Box::new(EncryptedTunnel::new(stream, psk, is_client).await?),
-            None => Box::new(PlainTunnel::new(stream)),
-        };
-        Ok(Self { inner })
-    }
-
-    pub async fn send_frame(&mut self, data: &[u8]) -> io::Result<()> {
-        self.inner.send_frame(data).await
-    }
-
-    pub async fn recv_frame(&mut self) -> io::Result<Option<Vec<u8>>> {
-        self.inner.recv_frame().await
-    }
-
-    pub async fn relay_bidirectional<E: AsyncRead + AsyncWrite + Unpin + Send>(
+    async fn relay_bidirectional<E: AsyncRead + AsyncWrite + Unpin + Send>(
         &mut self,
         external: &mut E,
-    ) -> io::Result<()> {
-        self.inner.relay_bidirectional(external).await
-    }
+    ) -> io::Result<()>;
 }
 
 // ── PlainTunnel ──────────────────────────────────────────────────────────────
 
-struct PlainTunnel {
+pub(crate) struct PlainTunnel {
     stream: Option<TcpStream>,
 }
 
 impl PlainTunnel {
-    fn new(stream: TcpStream) -> Self {
+    pub(crate) fn new(stream: TcpStream) -> Self {
         Self {
             stream: Some(stream),
         }
@@ -75,7 +39,7 @@ impl PlainTunnel {
 }
 
 #[async_trait]
-impl TunnelInner for PlainTunnel {
+impl Tunnel for PlainTunnel {
     async fn send_frame(&mut self, data: &[u8]) -> io::Result<()> {
         let stream = self.stream.as_mut().expect("stream уже ушёл в relay");
         let len = data.len() as u16;
@@ -98,7 +62,10 @@ impl TunnelInner for PlainTunnel {
         Ok(Some(data))
     }
 
-    async fn relay_bidirectional(&mut self, external: &mut dyn IoStream) -> io::Result<()> {
+    async fn relay_bidirectional<E: AsyncRead + AsyncWrite + Unpin + Send>(
+        &mut self,
+        external: &mut E,
+    ) -> io::Result<()> {
         let stream = self.stream.take().expect("stream уже ушёл в relay");
         let (mut tr, mut tw) = tokio::io::split(stream);
         let (mut er, mut ew) = tokio::io::split(external);
@@ -117,7 +84,7 @@ impl TunnelInner for PlainTunnel {
 
 // ── EncryptedTunnel ─────────────────────────────────────────────────────────
 
-struct EncryptedTunnel {
+pub(crate) struct EncryptedTunnel {
     stream: Option<TcpStream>,
     client_key: [u8; crypto::KEY_LEN],
     server_key: [u8; crypto::KEY_LEN],
@@ -127,7 +94,7 @@ struct EncryptedTunnel {
 }
 
 impl EncryptedTunnel {
-    async fn new(
+    pub(crate) async fn new(
         mut stream: TcpStream,
         psk: [u8; crypto::KEY_LEN],
         is_client: bool,
@@ -146,7 +113,7 @@ impl EncryptedTunnel {
 }
 
 #[async_trait]
-impl TunnelInner for EncryptedTunnel {
+impl Tunnel for EncryptedTunnel {
     async fn send_frame(&mut self, data: &[u8]) -> io::Result<()> {
         let stream = self.stream.as_mut().expect("stream уже ушёл в relay");
         if self.is_client {
@@ -165,7 +132,10 @@ impl TunnelInner for EncryptedTunnel {
         }
     }
 
-    async fn relay_bidirectional(&mut self, external: &mut dyn IoStream) -> io::Result<()> {
+    async fn relay_bidirectional<E: AsyncRead + AsyncWrite + Unpin + Send>(
+        &mut self,
+        external: &mut E,
+    ) -> io::Result<()> {
         let stream = self.stream.take().expect("stream уже ушёл в relay");
         let (mut tr, mut tw) = tokio::io::split(stream);
         let (mut er, mut ew) = tokio::io::split(external);

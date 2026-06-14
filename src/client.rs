@@ -117,9 +117,23 @@ async fn handle_socks_client(
 
     // ── Подключение к VPN-серверу и туннельный протокол ─────────────────
     let server = TcpStream::connect(server_addr).await?;
-    let mut tunnel = crate::tunnel::Tunnel::new(server, secret, true).await?;
 
-    tunnel.send_frame(&header).await?;
+    if let Some(psk) = secret {
+        let tunnel = crate::tunnel::EncryptedTunnel::new(server, psk, true).await?;
+        run_tunnel_client(socks_conn, tunnel, &header).await
+    } else {
+        let tunnel = crate::tunnel::PlainTunnel::new(server);
+        run_tunnel_client(socks_conn, tunnel, &header).await
+    }
+}
+
+/// Общая логика туннельного протокола (статическая диспетчеризация через `T`).
+async fn run_tunnel_client<T: crate::tunnel::Tunnel>(
+    socks_conn: &mut TcpStream,
+    mut tunnel: T,
+    header: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    tunnel.send_frame(header).await?;
     let plain = tunnel.recv_frame().await?;
     let status = match plain {
         Some(ref p) if !p.is_empty() => p[0],
