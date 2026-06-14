@@ -1,6 +1,5 @@
 use crate::crypto;
-use crate::protocol::{self, AddressType};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::protocol;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
@@ -19,11 +18,11 @@ pub async fn run(
     }
 
     loop {
-        let (mut client, addr) = listener.accept().await?;
+        let (client, addr) = listener.accept().await?;
         info!("Client connected: {addr}");
 
         tokio::spawn(async move {
-            if let Err(e) = handle_client(&mut client, secret).await {
+            if let Err(e) = handle_client(client, secret).await {
                 error!("Error handling client {addr}: {e}");
             }
         });
@@ -31,95 +30,30 @@ pub async fn run(
 }
 
 async fn handle_client(
-    client: &mut TcpStream,
+    client: TcpStream,
     secret: Option<[u8; crypto::KEY_LEN]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buf = [0u8; 512];
+    let mut tunnel = crate::tunnel::Tunnel::new(client, secret, false).await?;
 
-    if let Some(ref psk) = secret {
-        let (client_key, server_key) = crypto::secure_handshake(client, psk, false).await?;
+    let plain = tunnel.recv_frame().await?;
+    let plain = plain.ok_or("client closed connection before tunnel header")?;
+    let (_, target_addr, port) = protocol::parse_header(&plain)?;
+    let target = format!("{target_addr}:{port}");
+    info!("Connecting to {target}");
 
-        let plain = crypto::read_encrypted_frame(client, &client_key).await?;
-        let plain = plain.ok_or("client closed connection before tunnel header")?;
-        let (_, target_addr, port) = protocol::parse_header(&plain)?;
-        let target = format!("{target_addr}:{port}");
-        info!("Secure tunnel -> {target}");
-
-        let mut remote = match TcpStream::connect(&target).await {
-            Ok(conn) => {
-                let mut s_nonce: u64 = 0;
-                crypto::write_encrypted_frame(client, &[0x00], &server_key, &mut s_nonce).await?;
-                conn
-            }
-            Err(e) => {
-                error!("Failed to connect to {target}: {e}");
-                let mut s_nonce: u64 = 0;
-                crypto::write_encrypted_frame(client, &[0x05], &server_key, &mut s_nonce).await?;
-                return Err(e.into());
-            }
-        };
-
-        let (mut cr, mut cw) = client.split();
-        let (mut rr, mut rw) = remote.split();
-
-        let client_to_remote = crypto::relay_encrypted_to_plain(&mut cr, &mut rw, &client_key);
-
-        let mut s_nonce = 1u64;
-        let remote_to_client =
-            crypto::relay_plain_to_encrypted(&mut rr, &mut cw, &server_key, &mut s_nonce);
-
-        tokio::pin!(client_to_remote);
-        tokio::pin!(remote_to_client);
-
-        tokio::select! {
-            r = &mut client_to_remote => {
-                if let Err(e) = r { error!("client->remote relay error: {e}"); }
-            }
-            r = &mut remote_to_client => {
-                if let Err(e) = r { error!("remote->client relay error: {e}"); }
-            }
+    let mut remote = match TcpStream::connect(&target).await {
+        Ok(conn) => {
+            tunnel.send_frame(&[0x00]).await?;
+            conn
         }
-    } else {
-        // ─── Plain-режим (без шифрования) ─────────────────────────────────
-        client.read_exact(&mut buf[..1]).await?;
-        let atyp = AddressType::from_u8(buf[0])
-            .ok_or_else(|| format!("unsupported address type: {:#04x}", buf[0]))?;
-
-        let target_addr = protocol::read_address(client, atyp, &mut buf).await?;
-
-        client.read_exact(&mut buf[..2]).await?;
-        let port = u16::from_be_bytes([buf[0], buf[1]]);
-
-        let target = format!("{target_addr}:{port}");
-        info!("Connecting to {target}");
-
-        let mut remote = match TcpStream::connect(&target).await {
-            Ok(conn) => {
-                client.write_all(&[0x00]).await?;
-                conn
-            }
-            Err(e) => {
-                error!("Failed to connect to {target}: {e}");
-                client.write_all(&[0x05]).await?;
-                return Err(e.into());
-            }
-        };
-
-        let (mut cr, mut cw) = client.split();
-        let (mut rr, mut rw) = remote.split();
-
-        let client_to_remote = tokio::io::copy(&mut cr, &mut rw);
-        let remote_to_client = tokio::io::copy(&mut rr, &mut cw);
-
-        tokio::select! {
-            r = client_to_remote => {
-                if let Err(e) = r { error!("client->remote relay error: {e}"); }
-            }
-            r = remote_to_client => {
-                if let Err(e) = r { error!("remote->client relay error: {e}"); }
-            }
+        Err(e) => {
+            error!("Failed to connect to {target}: {e}");
+            tunnel.send_frame(&[0x05]).await?;
+            return Err(e.into());
         }
-    }
+    };
+
+    tunnel.relay_bidirectional(&mut remote).await?;
 
     Ok(())
 }
@@ -138,24 +72,29 @@ mod tests {
         let server_addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
-            let result = handle_client(&mut client, None).await;
+            let (client, _) = listener.accept().await.unwrap();
+            let result = handle_client(client, None).await;
             assert!(result.is_err());
         });
 
         let mut client = TcpStream::connect(server_addr).await.unwrap();
-        // Отправляем заголовок для недоступной цели (порт 1 — privileged)
         let (atyp, addr_bytes) = protocol::encode_address("127.0.0.1");
         let port: u16 = 1;
         let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
         header.push(atyp as u8);
         header.extend_from_slice(&addr_bytes);
         header.extend_from_slice(&port.to_be_bytes());
+
+        let len = header.len() as u16;
+        client.write_all(&len.to_be_bytes()).await.unwrap();
         client.write_all(&header).await.unwrap();
 
-        let mut status = [0u8; 1];
-        client.read_exact(&mut status).await.unwrap();
-        assert_eq!(status[0], 0x05);
+        let mut len_buf = [0u8; 2];
+        client.read_exact(&mut len_buf).await.unwrap();
+        let status_len = u16::from_be_bytes(len_buf) as usize;
+        let mut status_buf = vec![0u8; status_len];
+        client.read_exact(&mut status_buf).await.unwrap();
+        assert_eq!(status_buf[0], 0x05);
 
         server.await.unwrap();
     }
@@ -167,8 +106,8 @@ mod tests {
         let server_addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
-            let result = handle_client(&mut client, Some(psk)).await;
+            let (client, _) = listener.accept().await.unwrap();
+            let result = handle_client(client, Some(psk)).await;
             assert!(result.is_err());
         });
 
@@ -226,26 +165,28 @@ mod tests {
         let server_addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
-            // handle_client в plain-режиме: читает заголовок, подключается к цели,
-            // отправляет статус и входит в ретрансляцию.
-            handle_client(&mut client, None).await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            handle_client(client, None).await.unwrap();
         });
 
         let mut client = TcpStream::connect(server_addr).await.unwrap();
 
-        // Заголовок: подключаемся к эхо-серверу
         let (atyp, addr_bytes) = protocol::encode_address("127.0.0.1");
         let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
         header.push(atyp as u8);
         header.extend_from_slice(&addr_bytes);
         header.extend_from_slice(&echo_port.to_be_bytes());
+
+        let len = header.len() as u16;
+        client.write_all(&len.to_be_bytes()).await.unwrap();
         client.write_all(&header).await.unwrap();
 
-        // Читаем статус
-        let mut status = [0u8; 1];
-        client.read_exact(&mut status).await.unwrap();
-        assert_eq!(status[0], 0x00);
+        let mut len_buf = [0u8; 2];
+        client.read_exact(&mut len_buf).await.unwrap();
+        let status_len = u16::from_be_bytes(len_buf) as usize;
+        let mut status_buf = vec![0u8; status_len];
+        client.read_exact(&mut status_buf).await.unwrap();
+        assert_eq!(status_buf[0], 0x00);
 
         // Отправляем данные — эхо-сервер должен вернуть их обратно
         client.write_all(b"hello").await.unwrap();
@@ -267,8 +208,8 @@ mod tests {
         let server_addr = listener.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (mut client, _) = listener.accept().await.unwrap();
-            handle_client(&mut client, Some(psk)).await.unwrap();
+            let (client, _) = listener.accept().await.unwrap();
+            handle_client(client, Some(psk)).await.unwrap();
         });
 
         let mut client = TcpStream::connect(server_addr).await.unwrap();
