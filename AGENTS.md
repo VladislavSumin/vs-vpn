@@ -18,3 +18,4 @@
 - Logging uses `tracing` with `tracing-subscriber` (fmt + env-filter)
 - Default log level is `trace`; override with `RUST_LOG=info` (or `debug`, `warn`, `error`)
 - Comments must be written in Russian
+- Never delete or modify user-written comments without a clear reason; preserve existing comments when making code changes
