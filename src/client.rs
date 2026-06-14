@@ -1,4 +1,4 @@
-use crate::protocol::{self, AddressType, SocksCommand, SocksReply, SOCKS_VERSION};
+use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
@@ -31,9 +31,7 @@ async fn handle_socks_client(
     let nmethods = buf[1] as usize;
     socks_conn.read_exact(&mut buf[..nmethods]).await?;
 
-    socks_conn
-        .write_all(&[SOCKS_VERSION, 0x00])
-        .await?;
+    socks_conn.write_all(&[SOCKS_VERSION, 0x00]).await?;
 
     // SOCKS5 Request
     socks_conn.read_exact(&mut buf[..4]).await?;
@@ -104,7 +102,18 @@ async fn send_socks_reply(
     rep: SocksReply,
 ) -> Result<(), Box<dyn std::error::Error>> {
     stream
-        .write_all(&[SOCKS_VERSION, rep as u8, 0x00, AddressType::Ipv4 as u8, 0, 0, 0, 0, 0, 0])
+        .write_all(&[
+            SOCKS_VERSION,
+            rep as u8,
+            0x00,
+            AddressType::Ipv4 as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ])
         .await?;
     Ok(())
 }
