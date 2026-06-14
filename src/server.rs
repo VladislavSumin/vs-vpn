@@ -62,28 +62,11 @@ async fn handle_client(
         let (mut cr, mut cw) = client.split();
         let (mut rr, mut rw) = remote.split();
 
-        let client_to_remote = async {
-            loop {
-                let frame = crypto::read_encrypted_frame(&mut cr, &client_key).await?;
-                match frame {
-                    Some(plain) => rw.write_all(&plain).await?,
-                    None => break Ok::<_, std::io::Error>(()),
-                }
-            }
-        };
+        let client_to_remote = crypto::relay_encrypted_to_plain(&mut cr, &mut rw, &client_key);
 
-        let remote_to_client = async {
-            let mut buf = vec![0u8; crypto::RELAY_BUF];
-            let mut s_nonce = 1u64;
-            loop {
-                let n = rr.read(&mut buf).await?;
-                if n == 0 {
-                    break Ok::<_, std::io::Error>(());
-                }
-                crypto::write_encrypted_frame(&mut cw, &buf[..n], &server_key, &mut s_nonce)
-                    .await?;
-            }
-        };
+        let mut s_nonce = 1u64;
+        let remote_to_client =
+            crypto::relay_plain_to_encrypted(&mut rr, &mut cw, &server_key, &mut s_nonce);
 
         tokio::pin!(client_to_remote);
         tokio::pin!(remote_to_client);

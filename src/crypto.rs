@@ -129,6 +129,36 @@ pub async fn read_encrypted_frame<R: AsyncRead + Unpin>(
     Ok(Some(plaintext))
 }
 
+pub async fn relay_plain_to_encrypted<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    key: &[u8; KEY_LEN],
+    nonce: &mut u64,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; RELAY_BUF];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break Ok(());
+        }
+        write_encrypted_frame(writer, &buf[..n], key, nonce).await?;
+    }
+}
+
+pub async fn relay_encrypted_to_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    key: &[u8; KEY_LEN],
+) -> io::Result<()> {
+    loop {
+        let frame = read_encrypted_frame(reader, key).await?;
+        match frame {
+            Some(plain) => writer.write_all(&plain).await?,
+            None => break Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

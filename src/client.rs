@@ -173,27 +173,11 @@ async fn handle_socks_client(
         let (mut sr, mut sw) = socks_conn.split();
         let (mut cr, mut cw) = server.split();
 
-        let client_to_server = async {
-            let mut buf = vec![0u8; crypto::RELAY_BUF];
-            let mut c_nonce = 1u64;
-            loop {
-                let n = sr.read(&mut buf).await?;
-                if n == 0 {
-                    break Ok::<_, std::io::Error>(());
-                }
-                crypto::write_encrypted_frame(&mut cw, &buf[..n], &ck, &mut c_nonce).await?;
-            }
-        };
+        let mut c_nonce = 1u64;
+        let client_to_server =
+            crypto::relay_plain_to_encrypted(&mut sr, &mut cw, &ck, &mut c_nonce);
 
-        let server_to_client = async {
-            loop {
-                let frame = crypto::read_encrypted_frame(&mut cr, &sk).await?;
-                match frame {
-                    Some(plain) => sw.write_all(&plain).await?,
-                    None => break Ok::<_, std::io::Error>(()),
-                }
-            }
-        };
+        let server_to_client = crypto::relay_encrypted_to_plain(&mut cr, &mut sw, &sk);
 
         tokio::pin!(client_to_server);
         tokio::pin!(server_to_client);
