@@ -1,9 +1,9 @@
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jstring, JNI_VERSION_1_6};
+use jni::sys::{JNI_VERSION_1_6, jboolean, jint, jstring};
+use jni::{EnvUnowned, Outcome};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -83,38 +83,31 @@ fn parse_secret_opt(hex_str: Option<&str>) -> Option<[u8; 32]> {
 
 // ── JNI_OnLoad ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
-pub extern "system" fn JNI_OnLoad(_vm: jni::JavaVM, _: *mut std::ffi::c_void) -> jint {
+pub extern "system" fn JNI_OnLoad(vm: *mut jni::sys::JavaVM, _: *mut std::ffi::c_void) -> jint {
     init_logging();
+    let _ = unsafe { jni::JavaVM::from_raw(vm) };
     JNI_VERSION_1_6
 }
 
 // ── JNI: запуск прокси ──────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStart(
-    mut env: JNIEnv,
-    _class: JClass,
-    server: JString,
-    secret: JString,
-    listen: JString,
+pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStart<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    server: JString<'local>,
+    secret: JString<'local>,
+    listen: JString<'local>,
 ) -> jint {
-    let server: String = match env.get_string(&server) {
-        Ok(s) => s.into(),
-        Err(_) => return -1,
-    };
-    let listen: String = match env.get_string(&listen) {
-        Ok(s) => s.into(),
-        Err(_) => return -1,
-    };
-    let secret_str: Option<String> = if secret.is_null() {
+    let server: String = server.to_string();
+    let listen: String = listen.to_string();
+    let secret_str: Option<String> = if secret.as_raw().is_null() {
         None
     } else {
-        match env.get_string(&secret) {
-            Ok(s) if !s.is_empty() => Some(s.into()),
-            Ok(_) => None,
-            Err(_) => return -1,
-        }
+        let s = secret.to_string();
+        if s.is_empty() { None } else { Some(s) }
     };
 
     let secret_key = parse_secret_opt(secret_str.as_deref());
@@ -130,11 +123,7 @@ pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStart(
 
     // Очищаем лог-буфер для новой сессии
     log_buf().lock().unwrap().clear();
-    tracing::info!(
-        "Starting proxy: listen={}, server={}",
-        listen,
-        server
-    );
+    tracing::info!("Starting proxy: listen={}, server={}", listen, server);
 
     let shutdown = CancellationToken::new();
     let shutdown_clone = shutdown.clone();
@@ -148,14 +137,9 @@ pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStart(
             .unwrap();
 
         rt.block_on(async {
-            if let Err(e) = vs_vpn::client::run(
-                &listen,
-                &server,
-                secret_key,
-                Some(ready_tx),
-                shutdown_clone,
-            )
-            .await
+            if let Err(e) =
+                vs_vpn::client::run(&listen, &server, secret_key, Some(ready_tx), shutdown_clone)
+                    .await
             {
                 tracing::error!("Proxy error: {e}");
             }
@@ -186,9 +170,9 @@ pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStart(
 // ── JNI: остановка прокси ────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStop(
-    _env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStop<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jboolean {
     let mut state = STATE.lock().unwrap();
     match state.take() {
@@ -210,17 +194,25 @@ pub extern "system" fn Java_com_vs_vpn_NativeLib_nativeStop(
 // ── JNI: получение накопившихся логов ────────────────────────────────────────
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_com_vs_vpn_NativeLib_nativePollLogs(
-    env: JNIEnv,
-    _class: JClass,
+pub extern "system" fn Java_com_vs_vpn_NativeLib_nativePollLogs<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
 ) -> jstring {
     let mut lines = log_buf().lock().unwrap();
     let result: Vec<String> = lines.drain(..).collect();
     drop(lines);
 
     let output = result.join("\n");
-    match env.new_string(&output) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+    match env
+        .with_env(|env| -> jni::errors::Result<jstring> {
+            Ok(match env.new_string(&output) {
+                Ok(s) => s.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            })
+        })
+        .into_outcome()
+    {
+        Outcome::Ok(jstr) => jstr,
+        _ => std::ptr::null_mut(),
     }
 }

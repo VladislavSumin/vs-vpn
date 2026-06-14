@@ -3,7 +3,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
 };
 use hkdf::Hkdf;
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -18,7 +18,7 @@ const HKDF_INFO: &[u8] = b"vs-vpn-tunnel-v1";
 
 pub fn generate_psk() -> [u8; KEY_LEN] {
     let mut key = [0u8; KEY_LEN];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     key
 }
 
@@ -54,12 +54,12 @@ pub async fn secure_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     let mut server_nonce = [0u8; KEY_LEN];
 
     if is_client {
-        rand::rngs::OsRng.fill_bytes(&mut client_nonce);
+        rand::rng().fill_bytes(&mut client_nonce);
         stream.write_all(&client_nonce).await?;
         stream.read_exact(&mut server_nonce).await?;
     } else {
         stream.read_exact(&mut client_nonce).await?;
-        rand::rngs::OsRng.fill_bytes(&mut server_nonce);
+        rand::rng().fill_bytes(&mut server_nonce);
         stream.write_all(&server_nonce).await?;
     }
 
