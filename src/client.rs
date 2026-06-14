@@ -1,9 +1,14 @@
+use crate::crypto;
 use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
-pub async fn run(listen: &str, server_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    listen: &str,
+    server_addr: &str,
+    secret: Option<[u8; crypto::KEY_LEN]>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
     info!("SOCKS5 proxy listening on {listen}");
 
@@ -13,7 +18,7 @@ pub async fn run(listen: &str, server_addr: &str) -> Result<(), Box<dyn std::err
 
         let server_addr = server_addr.to_string();
         tokio::spawn(async move {
-            if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr).await {
+            if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr, secret).await {
                 error!("Error handling {addr}: {e}");
             }
         });
@@ -23,6 +28,7 @@ pub async fn run(listen: &str, server_addr: &str) -> Result<(), Box<dyn std::err
 async fn handle_socks_client(
     socks_conn: &mut TcpStream,
     server_addr: &str,
+    secret: Option<[u8; crypto::KEY_LEN]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 512];
 
@@ -85,36 +91,40 @@ async fn handle_socks_client(
 
     info!("SOCKS5 CONNECT -> {target_addr}:{port}");
 
-    // ── Подключение к VPN-серверу и туннельный протокол ─────────────────
-    // Устанавливаем TCP-соединение с VPN-сервером.
-    let mut server = TcpStream::connect(server_addr).await?;
-
-    // Туннельный протокол: клиент отправляет серверу заголовок с адресом цели.
-    // Формат заголовка:
-    //   ┌────────┬──────────────────┬────────┐
-    //   │ ATYP   │ адрес цели (var) │ PORT   │
-    //   │ 1 байт │ переменная длина │ 2 байта│
-    //   └────────┴──────────────────┴────────┘
-    // ATYP — тип адреса: 0x01 (IPv4) + 4 байта, 0x03 (домен) + 1 байт длины +
-    //   N байт имени, 0x04 (IPv6) + 16 байт.
-    // PORT — порт цели в сетевом порядке байт (big-endian).
+    // ── Построение туннельного заголовка ─────────────────────────────────
     let (header_atyp, addr_bytes) = protocol::encode_address(&target_addr);
     let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
     header.push(header_atyp as u8);
     header.extend_from_slice(&addr_bytes);
     header.extend_from_slice(&port.to_be_bytes());
-    server.write_all(&header).await?;
 
-    // Читаем ответ сервера — один байт статуса:
-    //   0x00 — успех (сервер подключился к цели).
-    //   0x01 — общая ошибка / general SOCKS server failure.
-    //   0x02 — соединение запрещено правилами.
-    //   0x03 — сеть недоступна.
-    //   0x04 — хост недоступен.
-    //   0x05 — соединение отклонено (connection refused).
-    //   остальное — общая ошибка.
-    server.read_exact(&mut buf[..1]).await?;
-    let status = buf[0];
+    // ── Подключение к VPN-серверу и туннельный протокол ─────────────────
+    let mut server = TcpStream::connect(server_addr).await?;
+
+    let mut client_key = None;
+    let mut server_key = None;
+    let status: u8;
+
+    if let Some(ref psk) = secret {
+        let (ck, sk) = crypto::secure_handshake(&mut server, psk, true).await?;
+
+        let mut c_nonce: u64 = 0;
+        crypto::write_encrypted_frame(&mut server, &header, &ck, &mut c_nonce).await?;
+
+        let plain = crypto::read_encrypted_frame(&mut server, &sk).await?;
+        status = match plain {
+            Some(ref p) if !p.is_empty() => p[0],
+            _ => return Err("server closed connection before status".into()),
+        };
+
+        client_key = Some(ck);
+        server_key = Some(sk);
+    } else {
+        server.write_all(&header).await?;
+        server.read_exact(&mut buf[..1]).await?;
+        status = buf[0];
+    }
+
     if status != 0x00 {
         // Маппим код ошибки туннельного протокола на код SOCKS5-ответа
         // и отправляем его клиенту.
@@ -142,24 +152,57 @@ async fn handle_socks_client(
     send_socks_reply(socks_conn, SocksReply::Succeeded).await?;
 
     // ── Двунаправленная ретрансляция данных ──────────────────────────────
-    // После успешного handshake клиент SOCKS5 и VPN-сервер прозрачно
-    // пересылают данные друг другу. Разделяем оба TCP-потока на
-    // читающую (r) и пишущую (w) половины и запускаем два встречных
-    // копирования: клиент → сервер и сервер → клиент.
-    // tokio::select! завершает оба копирования, как только одно из них
-    // останавливается (соединение разорвано с любой стороны).
-    let (mut sr, mut sw) = socks_conn.split();
-    let (mut cr, mut cw) = server.split();
+    if let (Some(ck), Some(sk)) = (client_key, server_key) {
+        let (mut sr, mut sw) = socks_conn.split();
+        let (mut cr, mut cw) = server.split();
 
-    let client_to_server = tokio::io::copy(&mut sr, &mut cw);
-    let server_to_client = tokio::io::copy(&mut cr, &mut sw);
+        let client_to_server = async {
+            let mut buf = vec![0u8; crypto::RELAY_BUF];
+            let mut c_nonce = 1u64;
+            loop {
+                let n = sr.read(&mut buf).await?;
+                if n == 0 {
+                    break Ok::<_, std::io::Error>(());
+                }
+                crypto::write_encrypted_frame(&mut cw, &buf[..n], &ck, &mut c_nonce).await?;
+            }
+        };
 
-    tokio::select! {
-        r = client_to_server => {
-            if let Err(e) = r { error!("client->server relay error: {e}"); }
+        let server_to_client = async {
+            loop {
+                let frame = crypto::read_encrypted_frame(&mut cr, &sk).await?;
+                match frame {
+                    Some(plain) => sw.write_all(&plain).await?,
+                    None => break Ok::<_, std::io::Error>(()),
+                }
+            }
+        };
+
+        tokio::pin!(client_to_server);
+        tokio::pin!(server_to_client);
+
+        tokio::select! {
+            r = &mut client_to_server => {
+                if let Err(e) = r { error!("client->server relay error: {e}"); }
+            }
+            r = &mut server_to_client => {
+                if let Err(e) = r { error!("server->client relay error: {e}"); }
+            }
         }
-        r = server_to_client => {
-            if let Err(e) = r { error!("server->client relay error: {e}"); }
+    } else {
+        let (mut sr, mut sw) = socks_conn.split();
+        let (mut cr, mut cw) = server.split();
+
+        let client_to_server = tokio::io::copy(&mut sr, &mut cw);
+        let server_to_client = tokio::io::copy(&mut cr, &mut sw);
+
+        tokio::select! {
+            r = client_to_server => {
+                if let Err(e) = r { error!("client->server relay error: {e}"); }
+            }
+            r = server_to_client => {
+                if let Err(e) = r { error!("server->client relay error: {e}"); }
+            }
         }
     }
 

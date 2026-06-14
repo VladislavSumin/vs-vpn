@@ -94,3 +94,48 @@ pub fn encode_address(addr: &str) -> (AddressType, Vec<u8>) {
         (AddressType::Domain, v)
     }
 }
+
+pub fn parse_header(data: &[u8]) -> Result<(AddressType, String, u16), Box<dyn std::error::Error>> {
+    if data.is_empty() {
+        return Err("empty header".into());
+    }
+    let atyp = AddressType::from_u8(data[0])
+        .ok_or_else(|| format!("unsupported address type: {:#04x}", data[0]))?;
+
+    let addr_bytes: usize;
+    let addr = match atyp {
+        AddressType::Ipv4 => {
+            if data.len() < 1 + 4 + 2 {
+                return Err("header too short for IPv4".into());
+            }
+            addr_bytes = 4;
+            format!("{}.{}.{}.{}", data[1], data[2], data[3], data[4])
+        }
+        AddressType::Domain => {
+            if data.len() < 1 + 1 {
+                return Err("header too short for domain".into());
+            }
+            let len = data[1] as usize;
+            addr_bytes = 1 + len;
+            if data.len() < 1 + addr_bytes + 2 {
+                return Err("header too short for domain".into());
+            }
+            String::from_utf8_lossy(&data[2..2 + len]).to_string()
+        }
+        AddressType::Ipv6 => {
+            if data.len() < 1 + 16 + 2 {
+                return Err("header too short for IPv6".into());
+            }
+            addr_bytes = 16;
+            let groups: Vec<String> = (0..8)
+                .map(|i| format!("{:02x}{:02x}", data[1 + i * 2], data[1 + i * 2 + 1]))
+                .collect();
+            groups.join(":")
+        }
+    };
+
+    let port_start = 1 + addr_bytes;
+    let port = u16::from_be_bytes([data[port_start], data[port_start + 1]]);
+
+    Ok((atyp, addr, port))
+}

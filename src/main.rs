@@ -1,4 +1,5 @@
 mod client;
+mod crypto;
 mod protocol;
 mod server;
 
@@ -20,12 +21,40 @@ enum Command {
         listen: String,
         #[arg(long)]
         server: String,
+        #[arg(
+            long,
+            help = "PSK hex-ключ для шифрования туннеля (64 hex-символа = 32 байта)"
+        )]
+        secret: Option<String>,
     },
     #[command(about = "Run the VPN server")]
     Server {
         #[arg(long, default_value = "0.0.0.0:9090")]
         listen: String,
+        #[arg(
+            long,
+            help = "PSK hex-ключ для шифрования туннеля (64 hex-символа = 32 байта)"
+        )]
+        secret: Option<String>,
     },
+    #[command(about = "Generate a random PSK key (hex string)")]
+    Keygen,
+}
+
+fn parse_secret(s: &str) -> Result<[u8; crypto::KEY_LEN], Box<dyn std::error::Error>> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex key: {e}"))?;
+    if bytes.len() != crypto::KEY_LEN {
+        return Err(format!(
+            "key must be {} hex chars ({} bytes), got {} bytes",
+            crypto::KEY_LEN * 2,
+            crypto::KEY_LEN,
+            bytes.len()
+        )
+        .into());
+    }
+    let mut key = [0u8; crypto::KEY_LEN];
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
 
 #[tokio::main]
@@ -41,8 +70,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Client { listen, server } => client::run(&listen, &server).await?,
-        Command::Server { listen } => server::run(&listen).await?,
+        Command::Client {
+            listen,
+            server,
+            secret,
+        } => {
+            let key = secret.as_deref().map(parse_secret).transpose()?;
+            client::run(&listen, &server, key).await?;
+        }
+        Command::Server { listen, secret } => {
+            let key = secret.as_deref().map(parse_secret).transpose()?;
+            server::run(&listen, key).await?;
+        }
+        Command::Keygen => {
+            let psk = crypto::generate_psk();
+            println!("{}", hex::encode(psk));
+        }
     }
 
     Ok(())
