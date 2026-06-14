@@ -15,4 +15,5 @@
 ## Conventions
 - Error handling uses `Box<dyn std::error::Error>` everywhere
 - Uses `#[repr(u8)]` enums with `from_u8` constructors for wire protocol
-- Logging goes to stderr (`eprintln!`)
+- Logging uses `tracing` with `tracing-subscriber` (fmt + env-filter)
+- Default log level is `trace`; override with `RUST_LOG=info` (or `debug`, `warn`, `error`)
