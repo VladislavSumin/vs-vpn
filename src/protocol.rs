@@ -33,7 +33,7 @@ pub enum SocksReply {
     ConnectionRefused = 0x05,
     // TtlExpired = 0x06,
     CommandNotSupported = 0x07,
-    AddressTypeNotSupported = 0x08,
+    // AddressTypeNotSupported = 0x08,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
