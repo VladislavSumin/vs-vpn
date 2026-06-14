@@ -252,3 +252,239 @@ async fn send_socks_reply(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto;
+    use crate::protocol::{self, AddressType, SOCKS_VERSION};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn test_tunnel_header_plain() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut tunnel, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            tunnel.read_exact(&mut buf[..1]).await.unwrap();
+            let atyp = AddressType::from_u8(buf[0]).unwrap();
+            let addr = protocol::read_address(&mut tunnel, atyp, &mut buf)
+                .await
+                .unwrap();
+            tunnel.read_exact(&mut buf[..2]).await.unwrap();
+            let port = u16::from_be_bytes([buf[0], buf[1]]);
+            tunnel.write_all(&[0x00]).await.unwrap();
+            (atyp, addr, port)
+        });
+
+        let mut client = TcpStream::connect(server_addr).await.unwrap();
+        let (atyp, addr_bytes) = protocol::encode_address("example.com");
+        let port: u16 = 443;
+        let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
+        header.push(atyp as u8);
+        header.extend_from_slice(&addr_bytes);
+        header.extend_from_slice(&port.to_be_bytes());
+        client.write_all(&header).await.unwrap();
+
+        let mut status = [0u8; 1];
+        client.read_exact(&mut status).await.unwrap();
+        assert_eq!(status[0], 0x00);
+
+        let (s_atyp, s_addr, s_port) = server.await.unwrap();
+        assert_eq!(s_atyp, atyp);
+        assert_eq!(s_addr, "example.com");
+        assert_eq!(s_port, port);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_header_ipv4_plain() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut tunnel, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            tunnel.read_exact(&mut buf[..1]).await.unwrap();
+            let atyp = AddressType::from_u8(buf[0]).unwrap();
+            let addr = protocol::read_address(&mut tunnel, atyp, &mut buf)
+                .await
+                .unwrap();
+            tunnel.read_exact(&mut buf[..2]).await.unwrap();
+            let port = u16::from_be_bytes([buf[0], buf[1]]);
+            // Отвечаем ошибкой — эмулируем отказ сервера
+            tunnel.write_all(&[0x05]).await.unwrap();
+            (atyp, addr, port)
+        });
+
+        let mut client = TcpStream::connect(server_addr).await.unwrap();
+        let (atyp, addr_bytes) = protocol::encode_address("10.0.0.1");
+        let port: u16 = 8080;
+        let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
+        header.push(atyp as u8);
+        header.extend_from_slice(&addr_bytes);
+        header.extend_from_slice(&port.to_be_bytes());
+        client.write_all(&header).await.unwrap();
+
+        let mut status = [0u8; 1];
+        client.read_exact(&mut status).await.unwrap();
+        assert_eq!(status[0], 0x05); // ConnectionRefused
+
+        let (s_atyp, s_addr, s_port) = server.await.unwrap();
+        assert_eq!(s_atyp, AddressType::Ipv4);
+        assert_eq!(s_addr, "10.0.0.1");
+        assert_eq!(s_port, port);
+    }
+
+    #[tokio::test]
+    async fn test_tunnel_header_encrypted() {
+        let psk = crypto::generate_psk();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut tunnel, _) = listener.accept().await.unwrap();
+            let (ck, sk) = crypto::secure_handshake(&mut tunnel, &psk, false)
+                .await
+                .unwrap();
+            let plain = crypto::read_encrypted_frame(&mut tunnel, &ck)
+                .await
+                .unwrap()
+                .unwrap();
+            let (atyp, addr, port) = protocol::parse_header(&plain).unwrap();
+            let mut s_nonce: u64 = 0;
+            crypto::write_encrypted_frame(&mut tunnel, &[0x00], &sk, &mut s_nonce)
+                .await
+                .unwrap();
+            (atyp, addr, port)
+        });
+
+        let mut client = TcpStream::connect(server_addr).await.unwrap();
+        let (ck, sk) = crypto::secure_handshake(&mut client, &psk, true)
+            .await
+            .unwrap();
+
+        let target = "10.0.0.1";
+        let port: u16 = 8080;
+        let (atyp, addr_bytes) = protocol::encode_address(target);
+        let mut header = Vec::with_capacity(1 + addr_bytes.len() + 2);
+        header.push(atyp as u8);
+        header.extend_from_slice(&addr_bytes);
+        header.extend_from_slice(&port.to_be_bytes());
+
+        let mut c_nonce: u64 = 0;
+        crypto::write_encrypted_frame(&mut client, &header, &ck, &mut c_nonce)
+            .await
+            .unwrap();
+
+        let plain = crypto::read_encrypted_frame(&mut client, &sk)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain[0], 0x00);
+
+        let (s_atyp, s_addr, s_port) = server.await.unwrap();
+        assert_eq!(s_atyp, atyp);
+        assert_eq!(s_addr, target);
+        assert_eq!(s_port, port);
+    }
+
+    #[tokio::test]
+    async fn test_socks5_handshake_and_connect_plain() {
+        // Запускаем mock-сервер туннеля, который принимает заголовок и отвечает 0x00
+        let tunnel_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tunnel_addr = tunnel_listener.local_addr().unwrap().to_string();
+
+        let tunnel_server = tokio::spawn(async move {
+            let (mut tunnel, _) = tunnel_listener.accept().await.unwrap();
+            let mut buf = [0u8; 512];
+            tunnel.read_exact(&mut buf[..1]).await.unwrap();
+            let atyp = AddressType::from_u8(buf[0]).unwrap();
+            let _addr =
+                protocol::read_address(&mut tunnel, atyp, &mut buf).await.unwrap();
+            tunnel.read_exact(&mut buf[..2]).await.unwrap();
+            tunnel.write_all(&[0x00]).await.unwrap();
+            // Держим соединение открытым для ретрансляции
+            let _ = tokio::io::copy(&mut tunnel, &mut tokio::io::sink()).await;
+        });
+
+        // Принимаем SOCKS5-соединение и передаём в handle_socks_client
+        let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_addr = socks_listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut socks_conn, _) = socks_listener.accept().await.unwrap();
+            handle_socks_client(&mut socks_conn, &tunnel_addr, None)
+                .await
+                .unwrap();
+        });
+
+        // Подключаемся как SOCKS5-клиент
+        let mut socks_client = TcpStream::connect(socks_addr).await.unwrap();
+
+        // SOCKS5 handshake: VER=5, NMETHODS=1, METHOD=0x00
+        socks_client
+            .write_all(&[SOCKS_VERSION, 0x01, 0x00])
+            .await
+            .unwrap();
+        let mut buf = [0u8; 2];
+        socks_client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(buf, [SOCKS_VERSION, 0x00]);
+
+        // SOCKS5 request: VER=5, CMD=1(CONNECT), RSV=0, ATYP=1(IPv4), 127.0.0.1:80
+        socks_client
+            .write_all(&[SOCKS_VERSION, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
+            .await
+            .unwrap();
+
+        // Читаем SOCKS5-ответ
+        let mut reply = [0u8; 10];
+        socks_client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[0], SOCKS_VERSION);
+        assert_eq!(reply[1], 0x00); // REP = succeeded
+
+        // Закрываем соединение, чтобы handle_socks_client завершился
+        drop(socks_client);
+
+        handle.await.unwrap();
+        tunnel_server.abort();
+    }
+
+    #[tokio::test]
+    async fn test_socks5_unsupported_command() {
+        let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_addr = socks_listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut socks_conn, _) = socks_listener.accept().await.unwrap();
+            let result = handle_socks_client(&mut socks_conn, "127.0.0.1:1", None).await;
+            assert!(result.is_err());
+        });
+
+        let mut socks_client = TcpStream::connect(socks_addr).await.unwrap();
+
+        // SOCKS5 handshake
+        socks_client
+            .write_all(&[SOCKS_VERSION, 0x01, 0x00])
+            .await
+            .unwrap();
+        let mut buf = [0u8; 2];
+        socks_client.read_exact(&mut buf).await.unwrap();
+
+        // SOCKS5 request: CMD=0x02 (BIND) — не поддерживается
+        socks_client
+            .write_all(&[SOCKS_VERSION, 0x02, 0x00, 0x01, 127, 0, 0, 1, 0, 80])
+            .await
+            .unwrap();
+
+        // Читаем SOCKS5-ответ с ошибкой
+        let mut reply = [0u8; 10];
+        socks_client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[0], SOCKS_VERSION);
+        assert_eq!(reply[1], 0x07); // CommandNotSupported
+
+        handle.await.unwrap();
+    }
+}
