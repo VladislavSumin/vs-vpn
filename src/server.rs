@@ -7,8 +7,12 @@ use tracing::{error, info};
 pub async fn run(
     listen: &str,
     secret: Option<[u8; crypto::KEY_LEN]>,
+    ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
+    if let Some(tx) = ready {
+        let _ = tx.send(listener.local_addr()?);
+    }
     info!("VPN server listening on {listen}");
 
     loop {

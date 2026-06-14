@@ -1,10 +1,6 @@
-mod client;
-mod crypto;
-mod protocol;
-mod server;
-
 use clap::{Parser, Subcommand};
 use tracing::info;
+use vs_vpn::{client, crypto, server};
 
 #[derive(Parser)]
 #[command(name = "vs-vpn", about = "Custom VPN with SOCKS5 proxy")]
@@ -76,11 +72,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             secret,
         } => {
             let key = secret.as_deref().map(parse_secret).transpose()?;
-            client::run(&listen, &server, key).await?;
+            client::run(&listen, &server, key, None).await?;
         }
         Command::Server { listen, secret } => {
             let key = secret.as_deref().map(parse_secret).transpose()?;
-            server::run(&listen, key).await?;
+            server::run(&listen, key, None).await?;
         }
         Command::Keygen => {
             let psk = crypto::generate_psk();
