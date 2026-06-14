@@ -44,3 +44,12 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
 }
+
+tasks.register<Exec>("buildNativeLibs") {
+    workingDir = file(project.rootDir)
+    commandLine("bash", file("${project.rootDir}/build-native.sh").absolutePath)
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildNativeLibs")
+}
