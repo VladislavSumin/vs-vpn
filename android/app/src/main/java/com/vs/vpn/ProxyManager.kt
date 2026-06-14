@@ -17,6 +17,8 @@ data class ProxyStatus(
 )
 
 object ProxyManager {
+    private const val MAX_LOG_ENTRIES = 128
+
     private val _status = MutableStateFlow(ProxyStatus())
     val status: StateFlow<ProxyStatus> = _status.asStateFlow()
 
@@ -71,7 +73,7 @@ object ProxyManager {
                     val newLines = raw.split("\n").filter { it.isNotBlank() }
                     if (newLines.isNotEmpty()) {
                         _status.update { current ->
-                            current.copy(logs = current.logs + newLines)
+                            current.copy(logs = (current.logs + newLines).takeLast(MAX_LOG_ENTRIES))
                         }
                     }
                 }
