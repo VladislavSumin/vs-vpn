@@ -2,6 +2,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 pub const SOCKS_VERSION: u8 = 0x05;
+pub const SOCKS_AUTH_NO_ACCEPTABLE: u8 = 0xFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

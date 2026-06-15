@@ -1,4 +1,6 @@
-use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
+use crate::protocol::{
+    self, AddressType, SOCKS_AUTH_NO_ACCEPTABLE, SOCKS_VERSION, SocksCommand, SocksReply,
+};
 use std::net::SocketAddr;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -64,7 +66,16 @@ async fn handle_socks_client(
     socks_conn.read_exact(&mut buf[..2]).await?; // VER + NMETHODS
     let n_methods = buf[1] as usize;
     socks_conn.read_exact(&mut buf[..n_methods]).await?; // nmethods list
-    socks_conn.write_all(&[SOCKS_VERSION, 0x00]).await?;
+
+    let methods = &buf[..n_methods];
+    if methods.contains(&0x00) {
+        socks_conn.write_all(&[SOCKS_VERSION, 0x00]).await?;
+    } else {
+        socks_conn
+            .write_all(&[SOCKS_VERSION, SOCKS_AUTH_NO_ACCEPTABLE])
+            .await?;
+        return Err("client does not support no-authentication method".into());
+    }
     trace!("SOCKS5 handshake completed");
 
     // ── SOCKS5 Request (RFC 1928, раздел 4) ──────────────────────────────
