@@ -6,6 +6,7 @@ members = [
     "feature/tunnel/api",
     "feature/tunnel/tcp-plain",
     "feature/tunnel/tcp-encrypted",
+    "core/socket-peer",
     "android/rust-jni",
 ]
 

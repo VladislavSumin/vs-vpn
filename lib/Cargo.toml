@@ -10,6 +10,7 @@ crate-type = ["lib"]
 vs-vpn-tunnel = { path = "../feature/tunnel/api" }
 vs-vpn-tunnel-tcp-plain = { path = "../feature/tunnel/tcp-plain" }
 vs-vpn-tunnel-tcp-encrypted = { path = "../feature/tunnel/tcp-encrypted" }
+vs-vpn-socket-peer = { path = "../core/socket-peer" }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }

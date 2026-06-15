@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, info_span, instrument, trace, warn};
+use vs_vpn_socket_peer;
 use vs_vpn_tunnel::Tunnel;
 use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
 use vs_vpn_tunnel_tcp_plain::PlainTunnel;
@@ -35,16 +36,41 @@ pub async fn run(
             result = listener.accept() => {
                 let (mut socks_conn, client_addr) = result?;
                 let server_addr = server_addr.to_string();
+                let local_addr = socks_conn.local_addr().ok();
+
                 let connection_span = info_span!(parent: Span::current(), "", c=%client_addr);
+
+                // Запускаем lsof фоном — результат залогируем отдельно
+                let lsof_fut = async move {
+                    if let Some(la) = local_addr {
+                        let pi = tokio::task::spawn_blocking(move || {
+                            vs_vpn_socket_peer::identify_peer(client_addr, la)
+                        })
+                        .await
+                        .unwrap_or(None);
+                        if let Some(pi) = pi {
+                            info!(
+                                parent: Span::current(),
+                                "SOCKS5 peer identified: {}", pi,
+                            );
+                        }
+                    }
+                };
 
                 tokio::spawn(
                     async move {
-                        debug!("SOCKS5 connection accepted");
-                        if let Err(e) =
-                            handle_socks_client(&mut socks_conn, &server_addr, secret).await
-                        {
-                            error!(%e, "SOCKS5 connection failed");
-                        }
+                        // lsof запущен в spawn_blocking — пусть работает параллельно
+                        tokio::join!(
+                            async {
+                                debug!("SOCKS5 connection accepted");
+                                if let Err(e) =
+                                    handle_socks_client(&mut socks_conn, &server_addr, secret).await
+                                {
+                                    error!(%e, "SOCKS5 connection failed");
+                                }
+                            },
+                            lsof_fut,
+                        );
                     }
                     .instrument(connection_span),
                 );

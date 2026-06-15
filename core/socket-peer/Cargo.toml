@@ -1,0 +1,7 @@
+[package]
+name = "vs-vpn-socket-peer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing = { workspace = true }

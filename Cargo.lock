@@ -1089,6 +1089,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "vs-vpn-socket-peer",
  "vs-vpn-tunnel",
  "vs-vpn-tunnel-tcp-encrypted",
  "vs-vpn-tunnel-tcp-plain",
@@ -1118,6 +1119,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vs-vpn",
+]
+
+[[package]]
+name = "vs-vpn-socket-peer"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
