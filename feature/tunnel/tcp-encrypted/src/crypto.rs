@@ -87,7 +87,7 @@ pub async fn write_encrypted_frame<W: AsyncWrite + Unpin>(
         ChaCha20Poly1305::new_from_slice(key).map_err(|e| io_err(format!("invalid key: {e}")))?;
     let ciphertext = cipher
         .encrypt(&full_nonce.into(), plaintext)
-        .map_err(|e| io_err(format!("encryption error: {e}")))?;
+        .map_err(|e| io_err(format!("encryption error (nonce={nonce_counter}): {e}")))?;
 
     let frame_len = ciphertext.len() as u16;
     writer.write_all(&frame_len.to_be_bytes()).await?;
@@ -124,7 +124,7 @@ pub async fn read_encrypted_frame<R: AsyncRead + Unpin>(
         ChaCha20Poly1305::new_from_slice(key).map_err(|e| io_err(format!("invalid key: {e}")))?;
     let plaintext = cipher
         .decrypt(&full_nonce.into(), ciphertext.as_slice())
-        .map_err(|e| io_err(format!("decryption error: {e}")))?;
+        .map_err(|e| io_err(format!("decryption error (nonce={nonce_counter}): {e}")))?;
 
     *nonce_counter += 1;
     Ok(Some(plaintext))

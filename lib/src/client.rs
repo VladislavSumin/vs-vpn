@@ -1,17 +1,20 @@
 use crate::protocol::{self, AddressType, SOCKS_VERSION, SocksCommand, SocksReply};
+use std::net::SocketAddr;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{Instrument, Span, debug, error, info, info_span, instrument, trace, warn};
 use vs_vpn_tunnel::Tunnel;
 use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
 use vs_vpn_tunnel_tcp_plain::PlainTunnel;
 
+#[instrument(name = "SOCKS5", skip_all)]
 pub async fn run(
     listen: &str,
     server_addr: &str,
     secret: Option<[u8; crypto::KEY_LEN]>,
-    ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+    ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
@@ -28,15 +31,21 @@ pub async fn run(
                 break;
             }
             result = listener.accept() => {
-                let (mut socks_conn, addr) = result?;
-                info!("SOCKS5 connection from {addr}");
-
+                let (mut socks_conn, client_addr) = result?;
                 let server_addr = server_addr.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_socks_client(&mut socks_conn, &server_addr, secret).await {
-                        error!("Error handling {addr}: {e}");
+                let connection_span = info_span!(parent: Span::current(), "", c=%client_addr);
+
+                tokio::spawn(
+                    async move {
+                        debug!("SOCKS5 connection accepted");
+                        if let Err(e) =
+                            handle_socks_client(&mut socks_conn, &server_addr, secret).await
+                        {
+                            error!(%e, "SOCKS5 connection failed");
+                        }
                     }
-                });
+                    .instrument(connection_span),
+                );
             }
         }
     }
@@ -52,63 +61,33 @@ async fn handle_socks_client(
     let mut buf = [0u8; 512];
 
     // ── SOCKS5 Handshake (RFC 1928, раздел 3) ────────────────────────────
-    // Клиент отправляет:
-    //   ┌────────┬──────────┬─────────────────┐
-    //   │ VER (1)│ NMETHODS │ METHODS (1..255)│
-    //   │  0x05  │  1 байт  │  NMETHODS байт  │
-    //   └────────┴──────────┴─────────────────┘
-    // VER — версия протокола (0x05 = SOCKS5).
-    // NMETHODS — количество перечисленных методов аутентификации.
-    // METHODS — список кодов методов (0x00 = без аутентификации,
-    //   0x02 = логин/пароль, 0xFF = нет приемлемых методов).
-
-    // Читаем первые 2 байта: VER + NMETHODS.
-    socks_conn.read_exact(&mut buf[..2]).await?;
-    let nmethods = buf[1] as usize;
-    // Читаем список METHODS (по одному байту на каждый метод).
-    socks_conn.read_exact(&mut buf[..nmethods]).await?;
-
-    // Ответ сервера на handshake (выбор метода):
-    //   ┌────────┬────────┐
-    //   │ VER (1)│ METHOD │
-    //   │  0x05  │ 1 байт │
-    //   └────────┴────────┘
-    // METHOD — выбранный метод. Всегда выбираем 0x00 (без аутентификации),
-    //   так как наш VPN-туннель сам по себе является защищённым каналом.
+    socks_conn.read_exact(&mut buf[..2]).await?; // VER + NMETHODS
+    let n_methods = buf[1] as usize;
+    socks_conn.read_exact(&mut buf[..n_methods]).await?; // nmethods list
     socks_conn.write_all(&[SOCKS_VERSION, 0x00]).await?;
+    trace!("SOCKS5 handshake completed");
 
     // ── SOCKS5 Request (RFC 1928, раздел 4) ──────────────────────────────
-    // Клиент отправляет запрос на установку соединения:
-    //   ┌────────┬────────┬──────┬──────┬───────────────┬────────┐
-    //   │ VER (1)│ CMD (1)│ RSV  │ ATYP │ DST.ADDR (var)│ DST.PORT│
-    //   │  0x05  │ команда│ 0x00 │ тип  │   адрес цели   │  2 байта│
-    //   └────────┴────────┴──────┴──────┴───────────────┴────────┘
-    // CMD — команда: 0x01 = CONNECT (TCP), 0x02 = BIND, 0x03 = UDP ASSOCIATE.
-    // RSV — зарезервированный байт, должен быть 0x00.
-    // ATYP — тип адреса: 0x01 = IPv4 (4 байта), 0x03 = домен (1 байт длина + N
-    //   байт имени), 0x04 = IPv6 (16 байт).
-    // DST.ADDR — адрес цели (формат зависит от ATYP).
-    // DST.PORT — порт цели в сетевом порядке байт (big-endian, 2 байта).
-
-    // Читаем первые 4 байта: VER + CMD + RSV + ATYP.
-    socks_conn.read_exact(&mut buf[..4]).await?;
+    socks_conn.read_exact(&mut buf[..4]).await?; // VER + CMD + RSV + ATYP
     let cmd = SocksCommand::from_u8(buf[1]);
     if cmd != Some(SocksCommand::Connect) {
         // Поддерживаем только TCP CONNECT; для остальных — ошибка.
+        warn!("unsupported SOCKS5 command: {cmd:?}");
         send_socks_reply(socks_conn, SocksReply::CommandNotSupported).await?;
         return Err("unsupported SOCKS5 command".into());
     }
 
-    // ATYP — байт buf[3], тип адреса цели.
-    let atyp = AddressType::from_u8(buf[3])
+    // Address type.
+    let address_type = AddressType::from_u8(buf[3])
         .ok_or_else(|| format!("unsupported address type: {:#04x}", buf[3]))?;
-    // Читаем сам адрес цели в зависимости от ATYP (IPv4, IPv6 или домен).
-    let target_addr = protocol::read_address(socks_conn, atyp, &mut buf).await?;
-    // После адреса читаем 2-байтовый порт назначения (big-endian).
+    // Address.
+    let target_addr = protocol::read_address(socks_conn, address_type, &mut buf).await?;
+    // Port
     socks_conn.read_exact(&mut buf[..2]).await?;
     let port = u16::from_be_bytes([buf[0], buf[1]]);
 
-    info!("SOCKS5 CONNECT -> {target_addr}:{port}");
+    let target = format!("{target_addr}:{port}");
+    info!(%target, "SOCKS5 CONNECT");
 
     // ── Построение туннельного заголовка ─────────────────────────────────
     let (header_atyp, addr_bytes) = protocol::encode_address(&target_addr);
@@ -119,27 +98,37 @@ async fn handle_socks_client(
 
     // ── Подключение к VPN-серверу и туннельный протокол ─────────────────
     let server = TcpStream::connect(server_addr).await?;
+    debug!("Connected to VPN server");
 
     if let Some(psk) = secret {
         let tunnel = EncryptedTunnel::new(server, psk, true).await?;
-        run_tunnel_client(socks_conn, tunnel, &header).await
+        run_tunnel_client(socks_conn, tunnel, &header, &target).await
     } else {
         let tunnel = PlainTunnel::new(server);
-        run_tunnel_client(socks_conn, tunnel, &header).await
+        run_tunnel_client(socks_conn, tunnel, &header, &target).await
     }
 }
 
 /// Общая логика туннельного протокола (статическая диспетчеризация через `T`).
+#[instrument(name="t", skip(socks_conn, tunnel, header), fields(target = %target))]
 async fn run_tunnel_client<T: Tunnel>(
     socks_conn: &mut TcpStream,
     mut tunnel: T,
     header: &[u8],
+    target: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let start = Instant::now();
+
     tunnel.send_frame(header).await?;
+    debug!("Tunnel header sent");
+
     let plain = tunnel.recv_frame().await?;
     let status = match plain {
         Some(ref p) if !p.is_empty() => p[0],
-        _ => return Err("server closed connection before status".into()),
+        _ => {
+            warn!("Server closed connection before status");
+            return Err("server closed connection before status".into());
+        }
     };
 
     if status != 0x00 {
@@ -154,49 +143,35 @@ async fn run_tunnel_client<T: Tunnel>(
             _ => SocksReply::GeneralFailure,
         };
         send_socks_reply(socks_conn, socks_rep).await?;
-        return Err(format!("server rejected: status {status:#04x}").into());
+        let reason = match status {
+            0x01 => "General SOCKS failure",
+            0x02 => "Connection not allowed by ruleset",
+            0x03 => "Network unreachable",
+            0x04 => "Host unreachable",
+            0x05 => "Connection refused",
+            _ => "Unknown error",
+        };
+        warn!(status = %status, reason, "Tunnel rejected by server");
+        return Err(format!("server rejected: {reason} (status {status:#04x})").into());
     }
 
     // ── SOCKS5 Reply (RFC 1928, раздел 6) ────────────────────────────────
-    // Ответ сервера SOCKS5 клиенту при успешном соединении:
-    //   ┌────────┬────────┬──────┬──────┬────────────────┬────────┐
-    //   │ VER (1)│ REP (1)│ RSV  │ ATYP │ BND.ADDR (var) │ BND.PORT│
-    //   │  0x05  │  0x00  │ 0x00 │ тип  │ адрес привязки │ 2 байта │
-    //   └────────┴────────┴──────┴──────┴────────────────┴────────┘
-    // REP — код ответа, 0x00 = успех (succeeded).
-    // BND.ADDR / BND.PORT — адрес и порт, к которым сервер привязался
-    //   на стороне цели. Для простоты всегда отправляем 0.0.0.0:0.
     send_socks_reply(socks_conn, SocksReply::Succeeded).await?;
+    info!("Tunnel established, starting relay");
 
     // ── Двунаправленная ретрансляция данных ──────────────────────────────
-    tunnel.relay_bidirectional(socks_conn).await?;
+    let relay_result = tunnel.relay_bidirectional(socks_conn).await;
+    let duration_ms = start.elapsed().as_millis();
 
-    Ok(())
+    match &relay_result {
+        Ok(()) => info!(duration_ms, "Tunnel relay completed"),
+        Err(e) => error!(%e, duration_ms, "Tunnel relay failed"),
+    }
+
+    relay_result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 /// Отправляет SOCKS5-ответ клиенту.
-///
-/// Формат ответа (RFC 1928, раздел 6):
-///   ┌────────┬────────┬──────┬──────┬────────────────┬────────┐
-///   │ VER (1)│ REP (1)│ RSV  │ ATYP │ BND.ADDR (var) │ BND.PORT│
-///   │  0x05  │  код   │ 0x00 │тип   │ адрес привязки │ 2 байта │
-///   └────────┴────────┴──────┴──────┴────────────────┴────────┘
-/// VER — версия протокола, всегда 0x05.
-/// REP — код ответа:
-///   0x00 — запрос выполнен успешно,
-///   0x01 — общая ошибка SOCKS-сервера,
-///   0x02 — соединение запрещено правилами,
-///   0x03 — сеть недоступна,
-///   0x04 — хост недоступен,
-///   0x05 — соединение отклонено,
-///   0x06 — превышен TTL,
-///   0x07 — команда не поддерживается,
-///   0x08 — тип адреса не поддерживается.
-/// RSV — зарезервированный байт, всегда 0x00.
-/// ATYP — тип адреса привязки (BND.ADDR).
-/// BND.ADDR — адрес, к которому сервер привязался для соединения с целью.
-///   В данной реализации всегда 0.0.0.0 (IPv4, 4 нулевых байта).
-/// BND.PORT — порт привязки, всегда 0 (2 нулевых байта).
 async fn send_socks_reply(
     stream: &mut TcpStream,
     rep: SocksReply,
@@ -388,7 +363,7 @@ mod tests {
         let socks_addr = socks_listener.local_addr().unwrap();
 
         let handle = tokio::spawn(async move {
-            let (mut socks_conn, _) = socks_listener.accept().await.unwrap();
+            let (mut socks_conn, _addr) = socks_listener.accept().await.unwrap();
             handle_socks_client(&mut socks_conn, &tunnel_addr, None)
                 .await
                 .unwrap();
@@ -431,7 +406,7 @@ mod tests {
         let socks_addr = socks_listener.local_addr().unwrap();
 
         let handle = tokio::spawn(async move {
-            let (mut socks_conn, _) = socks_listener.accept().await.unwrap();
+            let (mut socks_conn, _addr) = socks_listener.accept().await.unwrap();
             let result = handle_socks_client(&mut socks_conn, "127.0.0.1:1", None).await;
             assert!(result.is_err());
         });

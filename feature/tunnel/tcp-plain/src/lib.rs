@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::error;
+use tracing::{error, info};
 use vs_vpn_tunnel::Tunnel;
 
 pub struct PlainTunnel {
@@ -51,10 +51,16 @@ impl Tunnel for PlainTunnel {
 
         tokio::select! {
             r = tokio::io::copy(&mut er, &mut tw) => {
-                if let Err(e) = r { error!("relay plain tunnel-send error: {e}"); }
+                match r {
+                    Ok(n) => info!(bytes = n, "Plain relay finished: external->tunnel"),
+                    Err(e) => error!(%e, "Plain relay error: external->tunnel"),
+                }
             }
             r = tokio::io::copy(&mut tr, &mut ew) => {
-                if let Err(e) = r { error!("relay plain tunnel-recv error: {e}"); }
+                match r {
+                    Ok(n) => info!(bytes = n, "Plain relay finished: tunnel->external"),
+                    Err(e) => error!(%e, "Plain relay error: tunnel->external"),
+                }
             }
         }
         Ok(())

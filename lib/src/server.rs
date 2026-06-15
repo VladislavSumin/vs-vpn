@@ -1,17 +1,20 @@
 use crate::protocol;
+use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info};
+use tracing::{Instrument, Span, error, info, info_span, instrument};
 use vs_vpn_tunnel::Tunnel;
 use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
 use vs_vpn_tunnel_tcp_plain::PlainTunnel;
 
+#[instrument(skip(secret, ready), fields(listen = %listen, encrypted))]
 pub async fn run(
     listen: &str,
     secret: Option<[u8; crypto::KEY_LEN]>,
-    ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+    ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen).await?;
-    info!("VPN server listening on {listen}");
+    Span::current().record("encrypted", secret.is_some());
+    info!("VPN server started");
 
     // Отправляем наружу реальный адресс сокета, после того как он уже bind.
     // это позволяет использовать динамический порт в тестах, а так же дождаться реально bind.
@@ -21,13 +24,16 @@ pub async fn run(
 
     loop {
         let (client, addr) = listener.accept().await?;
-        info!("Client connected: {addr}");
+        let connection_span = info_span!(parent: Span::current(), "connection", %addr);
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(client, secret).await {
-                error!("Error handling client {addr}: {e}");
+        tokio::spawn(
+            async move {
+                if let Err(e) = handle_client(client, secret).await {
+                    error!(%e, "Client connection failed");
+                }
             }
-        });
+            .instrument(connection_span),
+        );
     }
 }
 
@@ -46,11 +52,13 @@ async fn handle_client(
 
 /// Общая логика туннельного протокола серверной стороны
 /// (статическая диспетчеризация через `T`).
+#[instrument(skip(tunnel), fields(target))]
 async fn run_tunnel_server<T: Tunnel>(mut tunnel: T) -> Result<(), Box<dyn std::error::Error>> {
     let plain = tunnel.recv_frame().await?;
     let plain = plain.ok_or("client closed connection before tunnel header")?;
     let (_, target_addr, port) = protocol::parse_header(&plain)?;
     let target = format!("{target_addr}:{port}");
+    Span::current().record("target", &target);
     info!("Connecting to {target}");
 
     let mut remote = match TcpStream::connect(&target).await {

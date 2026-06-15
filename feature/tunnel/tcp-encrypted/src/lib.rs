@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tracing::error;
+use tracing::{error, info};
 use vs_vpn_tunnel::Tunnel;
 
 pub struct EncryptedTunnel {
@@ -81,10 +81,16 @@ impl Tunnel for EncryptedTunnel {
 
         tokio::select! {
             r = crypto::relay_plain_to_encrypted(&mut er, &mut tw, send_key, send_nonce) => {
-                if let Err(e) = r { error!("relay encrypted tunnel-send error: {e}"); }
+                match r {
+                    Ok(()) => info!("Encrypted relay finished: external->tunnel"),
+                    Err(e) => error!(%e, "Encrypted relay error: external->tunnel"),
+                }
             }
             r = crypto::relay_encrypted_to_plain(&mut tr, &mut ew, recv_key, recv_nonce) => {
-                if let Err(e) = r { error!("relay encrypted tunnel-recv error: {e}"); }
+                match r {
+                    Ok(()) => info!("Encrypted relay finished: tunnel->external"),
+                    Err(e) => error!(%e, "Encrypted relay error: tunnel->external"),
+                }
             }
         }
         Ok(())
