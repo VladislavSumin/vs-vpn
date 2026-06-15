@@ -168,13 +168,13 @@ async fn run_tunnel_client<T: Tunnel>(
 
     // ── SOCKS5 Reply (RFC 1928, раздел 6) ────────────────────────────────
     send_socks_reply(socks_conn, SocksReply::Succeeded).await?;
-    info!("Tunnel established, starting relay");
+    debug!("Tunnel established, starting relay");
 
     // ── Двунаправленная ретрансляция данных ──────────────────────────────
     let relay_result = tunnel.relay_bidirectional(socks_conn).await;
 
     match &relay_result {
-        Ok(()) => info!(duration = ?start.elapsed(), "Tunnel relay completed"),
+        Ok(()) => debug!(duration = ?start.elapsed(), "Tunnel relay completed"),
         Err(e) => error!(%e, duration = ?start.elapsed(), "Tunnel relay failed"),
     }
 
