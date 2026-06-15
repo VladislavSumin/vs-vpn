@@ -21,5 +21,6 @@
 - Error handling uses `Box<dyn std::error::Error>` everywhere
 - Logging: `tracing` + `tracing-subscriber` (fmt + env-filter); default level `trace`, override with `RUST_LOG=info`
 - Span propagation: на многопоточном рантайме tokio `Span::enter()` теряется при миграции задачи между тредами. Всегда используйте `.instrument(span)` на future перед `tokio::spawn` (трейт `tracing::Instrument`). Дочерние спаны создавайте через `info_span!(parent: Span::current(), ...)`, чтобы сохранить иерархию. Никогда не полагайтесь на `let _enter = span.enter()` внутри `tokio::spawn` — он не переживёт переброс на другой поток.
+- Duration values in logs must use human-readable format via `Debug` (e.g. `?start.elapsed()`), never a raw millisecond integer
 - Comments must be written in Russian
 - Never delete or modify user-written comments without a clear reason

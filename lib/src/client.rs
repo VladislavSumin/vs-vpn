@@ -110,7 +110,7 @@ async fn handle_socks_client(
 }
 
 /// Общая логика туннельного протокола (статическая диспетчеризация через `T`).
-#[instrument(name="t", skip(socks_conn, tunnel, header), fields(target = %target))]
+#[instrument(name="tun", skip(socks_conn, tunnel, header), fields(target = %target))]
 async fn run_tunnel_client<T: Tunnel>(
     socks_conn: &mut TcpStream,
     mut tunnel: T,
@@ -120,7 +120,7 @@ async fn run_tunnel_client<T: Tunnel>(
     let start = Instant::now();
 
     tunnel.send_frame(header).await?;
-    debug!("Tunnel header sent");
+    trace!("Tunnel header sent");
 
     let plain = tunnel.recv_frame().await?;
     let status = match plain {
@@ -161,11 +161,10 @@ async fn run_tunnel_client<T: Tunnel>(
 
     // ── Двунаправленная ретрансляция данных ──────────────────────────────
     let relay_result = tunnel.relay_bidirectional(socks_conn).await;
-    let duration_ms = start.elapsed().as_millis();
 
     match &relay_result {
-        Ok(()) => info!(duration_ms, "Tunnel relay completed"),
-        Err(e) => error!(%e, duration_ms, "Tunnel relay failed"),
+        Ok(()) => info!(duration = ?start.elapsed(), "Tunnel relay completed"),
+        Err(e) => error!(%e, duration = ?start.elapsed(), "Tunnel relay failed"),
     }
 
     relay_result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
