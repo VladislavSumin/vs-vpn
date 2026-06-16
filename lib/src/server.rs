@@ -1,10 +1,10 @@
 use crate::protocol;
 use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tracing::{Instrument, Span, error, info, info_span, instrument};
-use vs_vpn_tunnel::Tunnel;
-use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
-use vs_vpn_tunnel_tcp_plain::PlainTunnel;
+use vs_vpn_tunnel::{Tunnel, TunnelAcceptor};
+use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedAcceptor, crypto};
+use vs_vpn_tunnel_tcp_plain::PlainAcceptor;
 
 #[instrument(skip(secret, ready), fields(listen = %listen, encrypted))]
 pub async fn run(
@@ -12,41 +12,40 @@ pub async fn run(
     secret: Option<[u8; crypto::KEY_LEN]>,
     ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind(listen).await?;
     Span::current().record("encrypted", secret.is_some());
     info!("VPN server started");
 
-    // Отправляем наружу реальный адресс сокета, после того как он уже bind.
-    // это позволяет использовать динамический порт в тестах, а так же дождаться реально bind.
-    if let Some(tx) = ready {
-        let _ = tx.send(listener.local_addr()?);
+    match secret {
+        Some(psk) => {
+            let acceptor = EncryptedAcceptor::bind(listen, psk).await?;
+            if let Some(tx) = ready {
+                let _ = tx.send(acceptor.local_addr()?);
+            }
+            run_with(acceptor).await
+        }
+        None => {
+            let acceptor = PlainAcceptor::bind(listen).await?;
+            if let Some(tx) = ready {
+                let _ = tx.send(acceptor.local_addr()?);
+            }
+            run_with(acceptor).await
+        }
     }
+}
 
+async fn run_with<A: TunnelAcceptor>(acceptor: A) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        let (client, addr) = listener.accept().await?;
-        let connection_span = info_span!(parent: Span::current(), "connection", %addr);
+        let (tunnel, client_addr) = acceptor.accept().await?;
+        let connection_span = info_span!(parent: Span::current(), "connection", %client_addr);
 
         tokio::spawn(
             async move {
-                if let Err(e) = handle_client(client, secret).await {
+                if let Err(e) = run_tunnel_server(tunnel).await {
                     error!(%e, "Client connection failed");
                 }
             }
             .instrument(connection_span),
         );
-    }
-}
-
-async fn handle_client(
-    client: TcpStream,
-    secret: Option<[u8; crypto::KEY_LEN]>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(psk) = secret {
-        let tunnel = EncryptedTunnel::new(client, psk, false).await?;
-        run_tunnel_server(tunnel).await
-    } else {
-        let tunnel = PlainTunnel::new(client);
-        run_tunnel_server(tunnel).await
     }
 }
 
@@ -88,12 +87,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_target_unreachable_plain() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = listener.local_addr().unwrap();
+        let acceptor = PlainAcceptor::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = acceptor.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (client, _) = listener.accept().await.unwrap();
-            let result = handle_client(client, None).await;
+            let (tunnel, _) = acceptor.accept().await.unwrap();
+            let result = run_tunnel_server(tunnel).await;
             assert!(result.is_err());
         });
 
@@ -122,12 +121,12 @@ mod tests {
     #[tokio::test]
     async fn test_server_target_unreachable_encrypted() {
         let psk = crypto::generate_psk();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = listener.local_addr().unwrap();
+        let acceptor = EncryptedAcceptor::bind("127.0.0.1:0", psk).await.unwrap();
+        let server_addr = acceptor.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (client, _) = listener.accept().await.unwrap();
-            let result = handle_client(client, Some(psk)).await;
+            let (tunnel, _) = acceptor.accept().await.unwrap();
+            let result = run_tunnel_server(tunnel).await;
             assert!(result.is_err());
         });
 
@@ -181,12 +180,12 @@ mod tests {
     async fn test_server_plain_relay_to_echo() {
         let echo_port = start_echo_server().await;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = listener.local_addr().unwrap();
+        let acceptor = PlainAcceptor::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = acceptor.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (client, _) = listener.accept().await.unwrap();
-            handle_client(client, None).await.unwrap();
+            let (tunnel, _) = acceptor.accept().await.unwrap();
+            run_tunnel_server(tunnel).await.unwrap();
         });
 
         let mut client = TcpStream::connect(server_addr).await.unwrap();
@@ -224,12 +223,12 @@ mod tests {
         let psk = crypto::generate_psk();
         let echo_port = start_echo_server().await;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = listener.local_addr().unwrap();
+        let acceptor = EncryptedAcceptor::bind("127.0.0.1:0", psk).await.unwrap();
+        let server_addr = acceptor.local_addr().unwrap();
 
         let server = tokio::spawn(async move {
-            let (client, _) = listener.accept().await.unwrap();
-            handle_client(client, Some(psk)).await.unwrap();
+            let (tunnel, _) = acceptor.accept().await.unwrap();
+            run_tunnel_server(tunnel).await.unwrap();
         });
 
         let mut client = TcpStream::connect(server_addr).await.unwrap();

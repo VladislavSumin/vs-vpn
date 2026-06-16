@@ -10,15 +10,28 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, info_span, instrument, trace, warn};
 use vs_vpn_socket_peer;
-use vs_vpn_tunnel::Tunnel;
-use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedTunnel, crypto};
-use vs_vpn_tunnel_tcp_plain::PlainTunnel;
+use vs_vpn_tunnel::{Tunnel, TunnelConnector};
+use vs_vpn_tunnel_tcp_encrypted::{self, EncryptedConnector, crypto};
+use vs_vpn_tunnel_tcp_plain::PlainConnector;
 
 #[instrument(name = "SOCKS5", skip_all)]
 pub async fn run(
     listen: &str,
     server_addr: &str,
     secret: Option<[u8; crypto::KEY_LEN]>,
+    ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
+    shutdown: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = server_addr.to_string();
+    match secret {
+        Some(psk) => run_with(listen, EncryptedConnector::new(addr, psk), ready, shutdown).await,
+        None => run_with(listen, PlainConnector::new(addr), ready, shutdown).await,
+    }
+}
+
+async fn run_with<C: TunnelConnector + Clone + 'static>(
+    listen: &str,
+    connector: C,
     ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +52,6 @@ pub async fn run(
             }
             result = listener.accept() => {
                 let (mut socks_conn, client_addr) = result?;
-                let server_addr = server_addr.to_string();
                 let local_addr = socks_conn.local_addr().ok();
 
                 let connection_span = info_span!(parent: Span::current(), "", c=%client_addr);
@@ -59,6 +71,8 @@ pub async fn run(
                     }
                 };
 
+                let connector = connector.clone();
+
                 tokio::spawn(
                     async move {
                         // lsof запущен в spawn_blocking — пусть работает параллельно
@@ -66,7 +80,7 @@ pub async fn run(
                             async {
                                 debug!("SOCKS5 connection accepted");
                                 if let Err(e) =
-                                    handle_socks_client(&mut socks_conn, &server_addr, secret).await
+                                    handle_socks_client(&mut socks_conn, &connector).await
                                 {
                                     error!(%e, "SOCKS5 connection failed");
                                 }
@@ -83,10 +97,9 @@ pub async fn run(
     Ok(())
 }
 
-async fn handle_socks_client(
+async fn handle_socks_client<C: TunnelConnector>(
     socks_conn: &mut TcpStream,
-    server_addr: &str,
-    secret: Option<[u8; crypto::KEY_LEN]>,
+    connector: &C,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0u8; 512];
 
@@ -135,17 +148,11 @@ async fn handle_socks_client(
     header.extend_from_slice(&addr_bytes);
     header.extend_from_slice(&port.to_be_bytes());
 
-    // ── Подключение к VPN-серверу и туннельный протокол ─────────────────
-    let server = TcpStream::connect(server_addr).await?;
+    // ── Подключение к VPN-серверу через коннектор ────────────────────────
+    let tunnel = connector.connect().await?;
     debug!("Connected to VPN server");
 
-    if let Some(psk) = secret {
-        let tunnel = EncryptedTunnel::new(server, psk, true).await?;
-        run_tunnel_client(socks_conn, tunnel, &header, &target).await
-    } else {
-        let tunnel = PlainTunnel::new(server);
-        run_tunnel_client(socks_conn, tunnel, &header, &target).await
-    }
+    run_tunnel_client(socks_conn, tunnel, &header, &target).await
 }
 
 /// Общая логика туннельного протокола (статическая диспетчеризация через `T`).
@@ -381,7 +388,7 @@ mod tests {
     async fn test_socks5_handshake_and_connect_plain() {
         // Запускаем mock-сервер туннеля, который принимает заголовок и отвечает 0x00
         let tunnel_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let tunnel_addr = tunnel_listener.local_addr().unwrap().to_string();
+        let tunnel_addr = tunnel_listener.local_addr().unwrap();
 
         let tunnel_server = tokio::spawn(async move {
             let (mut tunnel, _) = tunnel_listener.accept().await.unwrap();
@@ -400,9 +407,10 @@ mod tests {
         let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let socks_addr = socks_listener.local_addr().unwrap();
 
+        let connector = PlainConnector::new(tunnel_addr.to_string());
         let handle = tokio::spawn(async move {
             let (mut socks_conn, _addr) = socks_listener.accept().await.unwrap();
-            handle_socks_client(&mut socks_conn, &tunnel_addr, None)
+            handle_socks_client(&mut socks_conn, &connector)
                 .await
                 .unwrap();
         });
@@ -443,9 +451,10 @@ mod tests {
         let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let socks_addr = socks_listener.local_addr().unwrap();
 
+        let connector = PlainConnector::new("127.0.0.1:1".to_string());
         let handle = tokio::spawn(async move {
             let (mut socks_conn, _addr) = socks_listener.accept().await.unwrap();
-            let result = handle_socks_client(&mut socks_conn, "127.0.0.1:1", None).await;
+            let result = handle_socks_client(&mut socks_conn, &connector).await;
             assert!(result.is_err());
         });
 

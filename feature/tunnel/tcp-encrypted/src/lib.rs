@@ -2,10 +2,11 @@ pub mod crypto;
 
 use async_trait::async_trait;
 use std::io;
+use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
-use vs_vpn_tunnel::Tunnel;
+use vs_vpn_tunnel::{Tunnel, TunnelAcceptor, TunnelConnector};
 
 pub struct EncryptedTunnel {
     stream: Option<TcpStream>,
@@ -94,5 +95,60 @@ impl Tunnel for EncryptedTunnel {
             }
         }
         Ok(())
+    }
+}
+
+// ── Коннектор (клиентская сторона) ───────────────────────────────────────
+
+#[derive(Clone)]
+pub struct EncryptedConnector {
+    server_addr: String,
+    psk: [u8; crypto::KEY_LEN],
+}
+
+impl EncryptedConnector {
+    pub fn new(server_addr: String, psk: [u8; crypto::KEY_LEN]) -> Self {
+        Self { server_addr, psk }
+    }
+}
+
+#[async_trait]
+impl TunnelConnector for EncryptedConnector {
+    type TunnelType = EncryptedTunnel;
+
+    async fn connect(&self) -> io::Result<EncryptedTunnel> {
+        let stream = TcpStream::connect(&self.server_addr).await?;
+        EncryptedTunnel::new(stream, self.psk, true).await
+    }
+}
+
+// ── Акцептор (серверная сторона) ─────────────────────────────────────────
+
+pub struct EncryptedAcceptor {
+    listener: TcpListener,
+    psk: [u8; crypto::KEY_LEN],
+}
+
+impl EncryptedAcceptor {
+    pub async fn bind(addr: &str, psk: [u8; crypto::KEY_LEN]) -> io::Result<Self> {
+        Ok(Self {
+            listener: TcpListener::bind(addr).await?,
+            psk,
+        })
+    }
+}
+
+#[async_trait]
+impl TunnelAcceptor for EncryptedAcceptor {
+    type TunnelType = EncryptedTunnel;
+
+    async fn accept(&self) -> io::Result<(EncryptedTunnel, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+        let tunnel = EncryptedTunnel::new(stream, self.psk, false).await?;
+        Ok((tunnel, addr))
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
     }
 }

@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use std::io;
+use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
-use vs_vpn_tunnel::Tunnel;
+use vs_vpn_tunnel::{Tunnel, TunnelAcceptor, TunnelConnector};
 
 pub struct PlainTunnel {
     stream: Option<TcpStream>,
@@ -64,5 +65,56 @@ impl Tunnel for PlainTunnel {
             }
         }
         Ok(())
+    }
+}
+
+// ── Коннектор (клиентская сторона) ───────────────────────────────────────
+
+#[derive(Clone)]
+pub struct PlainConnector {
+    server_addr: String,
+}
+
+impl PlainConnector {
+    pub fn new(server_addr: String) -> Self {
+        Self { server_addr }
+    }
+}
+
+#[async_trait]
+impl TunnelConnector for PlainConnector {
+    type TunnelType = PlainTunnel;
+
+    async fn connect(&self) -> io::Result<PlainTunnel> {
+        let stream = TcpStream::connect(&self.server_addr).await?;
+        Ok(PlainTunnel::new(stream))
+    }
+}
+
+// ── Акцептор (серверная сторона) ─────────────────────────────────────────
+
+pub struct PlainAcceptor {
+    listener: TcpListener,
+}
+
+impl PlainAcceptor {
+    pub async fn bind(addr: &str) -> io::Result<Self> {
+        Ok(Self {
+            listener: TcpListener::bind(addr).await?,
+        })
+    }
+}
+
+#[async_trait]
+impl TunnelAcceptor for PlainAcceptor {
+    type TunnelType = PlainTunnel;
+
+    async fn accept(&self) -> io::Result<(PlainTunnel, SocketAddr)> {
+        let (stream, addr) = self.listener.accept().await?;
+        Ok((PlainTunnel::new(stream), addr))
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
     }
 }
