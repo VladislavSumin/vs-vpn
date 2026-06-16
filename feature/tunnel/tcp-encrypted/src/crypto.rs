@@ -138,11 +138,16 @@ pub async fn relay_plain_to_encrypted<R: AsyncRead + Unpin, W: AsyncWrite + Unpi
 ) -> io::Result<()> {
     let mut buf = vec![0u8; RELAY_BUF];
     loop {
-        let n = reader.read(&mut buf).await?;
+        let n = reader
+            .read(&mut buf)
+            .await
+            .map_err(|e| io::Error::new(e.kind(), format!("operation=read: {e}")))?;
         if n == 0 {
             break Ok(());
         }
-        write_encrypted_frame(writer, &buf[..n], key, nonce).await?;
+        write_encrypted_frame(writer, &buf[..n], key, nonce)
+            .await
+            .map_err(|e| io::Error::new(e.kind(), format!("operation=write: {e}")))?;
     }
 }
 
@@ -153,9 +158,14 @@ pub async fn relay_encrypted_to_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpi
     nonce: &mut u64,
 ) -> io::Result<()> {
     loop {
-        let frame = read_encrypted_frame(reader, key, nonce).await?;
+        let frame = read_encrypted_frame(reader, key, nonce)
+            .await
+            .map_err(|e| io::Error::new(e.kind(), format!("operation=read: {e}")))?;
         match frame {
-            Some(plain) => writer.write_all(&plain).await?,
+            Some(plain) => writer
+                .write_all(&plain)
+                .await
+                .map_err(|e| io::Error::new(e.kind(), format!("operation=write: {e}")))?,
             None => break Ok(()),
         }
     }
