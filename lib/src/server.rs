@@ -33,6 +33,14 @@ pub async fn run(
     }
 }
 
+/// Запуск сервера с произвольным акцептором (QUIC, etc.).
+/// Публичная для использования с `--transport quic`.
+pub async fn run_acceptor<A: TunnelAcceptor>(
+    acceptor: A,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with(acceptor).await
+}
+
 async fn run_with<A: TunnelAcceptor>(acceptor: A) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (tunnel, client_addr) = acceptor.accept().await?;

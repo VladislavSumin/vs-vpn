@@ -29,6 +29,17 @@ pub async fn run(
     }
 }
 
+/// Запуск SOCKS5-прокси с произвольным коннектором (QUIC, etc.).
+/// Публичная для использования с `--transport quic`.
+pub async fn run_connector<C: TunnelConnector + Clone + 'static>(
+    listen: &str,
+    connector: C,
+    ready: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
+    shutdown: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with(listen, connector, ready, shutdown).await
+}
+
 async fn run_with<C: TunnelConnector + Clone + 'static>(
     listen: &str,
     connector: C,

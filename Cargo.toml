@@ -6,6 +6,7 @@ members = [
     "feature/tunnel/api",
     "feature/tunnel/tcp-plain",
     "feature/tunnel/tcp-encrypted",
+    "feature/tunnel/quic",
     "core/socket-peer",
     "android/rust-jni",
 ]
@@ -27,3 +28,7 @@ hkdf = "0.13"
 sha2 = "0.11"
 rand = "0.10"
 jni = "0.22"
+quinn = "0.11"
+rustls = "0.23"
+rcgen = "0.14"
+rustls-pemfile = "2"

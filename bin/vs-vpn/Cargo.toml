@@ -9,9 +9,12 @@ path = "src/main.rs"
 
 [dependencies]
 vs-vpn = { path = "../../lib" }
+vs-vpn-tunnel-quic = { path = "../../feature/tunnel/quic" }
 clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 hex = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
