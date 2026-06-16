@@ -14,16 +14,15 @@ impl std::fmt::Display for ProcessInfo {
 
 /// Определяет локальный процесс по peer-адресу TCP-подключения.
 ///
-/// Тяжёлая блокирующая операция (вызов `lsof`).
-/// Вызывающий код должен обернуть в `tokio::task::spawn_blocking`.
+/// Тяжёлая операция (вызов `lsof`).
 /// Возвращает `None`, если определить процесс невозможно.
-pub fn identify_peer(peer_addr: SocketAddr, _local_addr: SocketAddr) -> Option<ProcessInfo> {
-    identify_peer_impl(peer_addr)
+pub async fn identify_peer(peer_addr: SocketAddr, _local_addr: SocketAddr) -> Option<ProcessInfo> {
+    identify_peer_impl(peer_addr).await
 }
 
 #[cfg(target_os = "macos")]
-fn identify_peer_impl(peer_addr: SocketAddr) -> Option<ProcessInfo> {
-    use std::process::Command;
+async fn identify_peer_impl(peer_addr: SocketAddr) -> Option<ProcessInfo> {
+    use tokio::process::Command;
 
     let port = peer_addr.port();
     let host = peer_addr.ip();
@@ -32,6 +31,7 @@ fn identify_peer_impl(peer_addr: SocketAddr) -> Option<ProcessInfo> {
     let output = Command::new("/usr/sbin/lsof")
         .args(["-n", "-P", "-i", &filter, "-F", "pcn"])
         .output()
+        .await
         .ok()?;
 
     parse_lsof_f(String::from_utf8_lossy(&output.stdout).as_ref())
@@ -64,6 +64,6 @@ fn parse_lsof_f(stdout: &str) -> Option<ProcessInfo> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn identify_peer_impl(_peer_addr: SocketAddr) -> Option<ProcessInfo> {
+async fn identify_peer_impl(_peer_addr: SocketAddr) -> Option<ProcessInfo> {
     None
 }

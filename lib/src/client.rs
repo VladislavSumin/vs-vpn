@@ -2,9 +2,11 @@ use crate::protocol::{
     self, AddressType, SOCKS_AUTH_NO_ACCEPTABLE, SOCKS_VERSION, SocksCommand, SocksReply,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, info_span, instrument, trace, warn};
 use vs_vpn_socket_peer;
@@ -27,6 +29,8 @@ pub async fn run(
         let _ = tx.send(listener.local_addr()?);
     }
 
+    let lsof_semaphore = Arc::new(Semaphore::new(4));
+
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => {
@@ -41,13 +45,11 @@ pub async fn run(
                 let connection_span = info_span!(parent: Span::current(), "", c=%client_addr);
 
                 // Запускаем lsof фоном — результат залогируем отдельно
+                let sem = lsof_semaphore.clone();
                 let lsof_fut = async move {
                     if let Some(la) = local_addr {
-                        let pi = tokio::task::spawn_blocking(move || {
-                            vs_vpn_socket_peer::identify_peer(client_addr, la)
-                        })
-                        .await
-                        .unwrap_or(None);
+                        let _permit = sem.acquire().await;
+                        let pi = vs_vpn_socket_peer::identify_peer(client_addr, la).await;
                         if let Some(pi) = pi {
                             info!(
                                 parent: Span::current(),
