@@ -141,13 +141,13 @@ pub async fn relay_plain_to_encrypted<R: AsyncRead + Unpin, W: AsyncWrite + Unpi
         let n = reader
             .read(&mut buf)
             .await
-            .map_err(|e| io::Error::new(e.kind(), format!("operation=read: {e}")))?;
+            .map_err(|e| io::Error::new(e.kind(), format!("operation_read: {e}")))?;
         if n == 0 {
             break Ok(());
         }
         write_encrypted_frame(writer, &buf[..n], key, nonce)
             .await
-            .map_err(|e| io::Error::new(e.kind(), format!("operation=write: {e}")))?;
+            .map_err(|e| io::Error::new(e.kind(), format!("operation_write: {e}")))?;
     }
 }
 
@@ -160,12 +160,12 @@ pub async fn relay_encrypted_to_plain<R: AsyncRead + Unpin, W: AsyncWrite + Unpi
     loop {
         let frame = read_encrypted_frame(reader, key, nonce)
             .await
-            .map_err(|e| io::Error::new(e.kind(), format!("operation=read: {e}")))?;
+            .map_err(|e| io::Error::new(e.kind(), format!("operation_read: {e}")))?;
         match frame {
             Some(plain) => writer
                 .write_all(&plain)
                 .await
-                .map_err(|e| io::Error::new(e.kind(), format!("operation=write: {e}")))?,
+                .map_err(|e| io::Error::new(e.kind(), format!("operation_write: {e}")))?,
             None => break Ok(()),
         }
     }
